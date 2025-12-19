@@ -19,6 +19,11 @@ from models.product_models import (
     ProductAllResponse,
     ToggleOnlineRequest
 )
+from schemas.product_schemas import (
+    StockSucursalInput,
+    VarianteUpdateInput,
+    ProductoUpdateSchema
+)
 import logging
 from utils.auth import require_admin
 import base64
@@ -26,6 +31,7 @@ from models.imageUpload import ImageUpload
 from models.imageResponse import ImageResponse
 from datetime import datetime
 import os
+from sqlalchemy.orm import Session
 import uuid
 logger = logging.getLogger(__name__)
 
@@ -34,8 +40,6 @@ router = APIRouter()
 IMAGES_DIR = "/home/breightend/imagenes-productos"
 IMAGES_BASE_URL = "/static/productos"
 
-# --- ADMIN ENDPOINTS ---
-# NOTE: These must be defined BEFORE /{product_id} route to avoid path conflicts
 
 @router.get("/all", response_model=List[ProductAllResponse], dependencies=[Depends(require_admin)])
 async def get_all_products_admin(provider_code: Optional[str] = None):
@@ -588,75 +592,133 @@ async def get_product_images(product_id: int):
         )
 
 
-## 4. Mantener el PUT endpoint actual para actualizar producto
-
 @router.put("/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: int, product: ProductUpdate):
-    """
-    Update an existing product.
-    
-    Path Parameters:
-    - product_id: The ID of the product to update
-    
-    Request Body:
-    - ProductUpdate model with fields to update (all optional)
-    """
+async def update_product(product_id: int, payload: ProductoUpdateSchema):
     try:
-        # First, check if product exists
+        # 1. Verificar si el producto existe
         existing = await db.fetch_one("SELECT id FROM products WHERE id = $1", product_id)
-        if existing is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Producto con ID {product_id} no encontrado"
-            )
-        
-        # Build dynamic update query based on provided fields
-        update_fields = []
-        params = []
-        param_count = 1
-        
-        for field, value in product.dict(exclude_unset=True).items():
-            update_fields.append(f"{field} = ${param_count}")
-            params.append(value)
-            param_count += 1
-        
-        if not update_fields:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No se proporcionaron campos para actualizar"
-            )
-        
-        # Add last_modified_date
-        update_fields.append(f"last_modified_date = CURRENT_TIMESTAMP")
-        
-        # Add product_id as the last parameter
-        params.append(product_id)
-        
-        query = f"""
-            UPDATE products
-            SET {', '.join(update_fields)}
-            WHERE id = ${param_count}
-            RETURNING id, product_name, description, cost, sale_price, provider_code,
-                      group_id, provider_id, brand_id, tax, discount,
-                      original_price, discount_percentage, discount_amount,
-                      has_discount, comments, state, 
-                      en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
-                      creation_date, last_modified_date
-        """
-        
-        result = await db.fetch_one(query, *params)
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating product {product_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar el producto: {str(e)}"
-        )
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Producto con ID {product_id} no encontrado")
 
+        async with await db.transaction() as conn:
+            # 2. Actualizar Info General del Producto
+            updated_product = dict(await conn.fetchrow(
+                """
+                UPDATE products 
+                SET nombre_web = $1,
+                    descripcion_web = $2,
+                    precio_web = $3,
+                    en_tienda_online = $4,
+                    last_modified_date = CURRENT_TIMESTAMP
+                WHERE id = $5
+                RETURNING id, product_name, description, cost, sale_price, provider_code,
+                          group_id, provider_id, brand_id, tax, discount,
+                          original_price, discount_percentage, discount_amount,
+                          has_discount, comments, state, 
+                          en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
+                          creation_date, last_modified_date, user_id
+                """,
+                payload.nombre,
+                payload.descripcion,
+                payload.precio_web,
+                payload.en_tienda_online,
+                product_id
+            ))
+
+            # 3. Procesar las Variantes
+            for var_input in payload.variantes:
+                # 3.1. Verificar que la variante existe y pertenece al producto
+                variant_exists = await conn.fetchval(
+                    """
+                    SELECT id FROM web_variants 
+                    WHERE id = $1 AND product_id = $2
+                    """,
+                    var_input.id,
+                    product_id
+                )
+                
+                if not variant_exists:
+                    logger.warning(f"Variante {var_input.id} no encontrada para producto {product_id}, saltando...")
+                    continue
+                
+                # 3.2. Calcular el stock total web desde configuracion_stock
+                total_stock_web = sum(
+                    asignacion.cantidad_asignada 
+                    for asignacion in var_input.configuracion_stock
+                )
+                
+                # 3.3. Actualizar web_variants (stock total)
+                await conn.execute(
+                    """
+                    UPDATE web_variants
+                    SET is_active = $1,
+                        displayed_stock = $2
+                    WHERE id = $3 AND product_id = $4
+                    """,
+                    var_input.mostrar_en_web,
+                    total_stock_web,
+                    var_input.id,
+                    product_id
+                )
+                
+                # 3.4. NUEVO: Limpiar asignaciones anteriores de esta variante
+                await conn.execute(
+                    """
+                    DELETE FROM web_variant_branch_assignment
+                    WHERE variant_id = $1
+                    """,
+                    var_input.id
+                )
+                
+                # 3.5. NUEVO: Insertar nuevas asignaciones por sucursal
+                for asignacion in var_input.configuracion_stock:
+                    if asignacion.cantidad_asignada > 0:
+                        # Validar que la cantidad asignada no exceda el stock físico
+                        stock_fisico = await conn.fetchval(
+                            """
+                            SELECT COALESCE(quantity, 0)
+                            FROM warehouse_stock_variants wsv
+                            JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                                AND wv.size_id = wsv.size_id 
+                                AND wv.color_id = wsv.color_id
+                            WHERE wv.id = $1 AND wsv.branch_id = $2
+                            """,
+                            var_input.id,
+                            asignacion.sucursal_id
+                        ) or 0
+                        
+                        if asignacion.cantidad_asignada > stock_fisico:
+                            logger.warning(
+                                f"Asignación web ({asignacion.cantidad_asignada}) excede stock físico ({stock_fisico}) "
+                                f"para variante {var_input.id} en sucursal {asignacion.sucursal_id}. "
+                                f"Ajustando a {stock_fisico}"
+                            )
+                            asignacion.cantidad_asignada = stock_fisico
+                        
+                        # Insertar asignación
+                        await conn.execute(
+                            """
+                            INSERT INTO web_variant_branch_assignment 
+                                (variant_id, branch_id, cantidad_asignada, updated_at)
+                            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                            """,
+                            var_input.id,
+                            asignacion.sucursal_id,
+                            asignacion.cantidad_asignada
+                        )
+                
+                logger.info(
+                    f"Variante {var_input.id} actualizada: "
+                    f"stock_web={total_stock_web}, visible={var_input.mostrar_en_web}, "
+                    f"asignaciones={len(var_input.configuracion_stock)}"
+                )
+        
+        logger.info(f"Producto {product_id} actualizado correctamente con {len(payload.variantes)} variantes")
+        return updated_product
+
+    except Exception as e:
+        logger.error(f"Error actualizando producto {product_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- VIRTUAL STORE ENDPOINTS ---
@@ -932,116 +994,124 @@ async def get_productos_by_group(groupName: str):
         )
 
 
-
-@router.get("/{product_id}", response_model=ProductDetail)
-async def get_product(product_id: int):
-    """
-    Get complete information for a specific product by ID.
-    Includes all details: images, colors, sizes, variants, and stock.
-    
-    Path Parameters:
-    - product_id: The ID of the product to retrieve
-    
-    Returns:
-    - Complete product information with all variants and stock details
-    """
+@router.get("/{product_id}", response_model=OnlineStoreProduct)
+async def get_product(
+    product_id: int,
+    branch_id: Optional[int] = Query(None, description="ID de sucursal. Null = Stock Web manual.")
+):
     try:
-        # Get basic product info with images
-        product_query = """
-            SELECT 
-                p.id,
-                p.nombre_web,
-                p.descripcion_web,
-                p.precio_web,
-                p.slug,
-                COALESCE(g.group_name, 'Sin categoría') as category,
-                COALESCE(
-                    ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
-                    ARRAY[]::TEXT[]
-                ) as images,
-                COALESCE(SUM(wsv.quantity), 0) as stock_disponible
-            FROM products p
-            LEFT JOIN groups g ON p.group_id = g.id
-            LEFT JOIN images i ON i.product_id = p.id
-            LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
-            WHERE p.id = $1 AND p.en_tienda_online = TRUE
-            GROUP BY p.id, g.group_name
-        """
+        # --- 1. DATOS PRINCIPALES DEL PRODUCTO ---
+        # Usamos la misma lógica del listado: si hay sucursal, miramos stock físico global para el total, 
+        # si no, miramos stock web manual.
         
-        product = await db.fetch_one(product_query, product_id)
-        
+        if branch_id is None:
+            # Modo Web
+            query_product = """
+                SELECT 
+                    p.id,
+                    p.nombre_web,
+                    p.descripcion_web,
+                    p.precio_web,
+                    p.slug,
+                    COALESCE(g.group_name, 'Sin categoría') as category,
+                    COALESCE(
+                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        '{}'
+                    ) as images,
+                    COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible
+                FROM products p
+                LEFT JOIN groups g ON p.group_id = g.id
+                LEFT JOIN images i ON i.product_id = p.id
+                LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+                WHERE p.id = $1 AND p.en_tienda_online = TRUE
+                GROUP BY p.id, g.group_name
+            """
+            params_prod = [product_id]
+        else:
+            # Modo Sucursal
+            query_product = """
+                SELECT 
+                    p.id,
+                    p.nombre_web,
+                    p.descripcion_web,
+                    p.precio_web,
+                    p.slug,
+                    COALESCE(g.group_name, 'Sin categoría') as category,
+                    COALESCE(
+                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        '{}'
+                    ) as images,
+                    COALESCE(SUM(wsv.quantity), 0) as stock_disponible
+                FROM products p
+                LEFT JOIN groups g ON p.group_id = g.id
+                LEFT JOIN images i ON i.product_id = p.id
+                JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+                LEFT JOIN warehouse_stock_variants wsv 
+                    ON wsv.product_id = p.id 
+                    AND wsv.size_id = wv.size_id 
+                    AND wsv.color_id = wv.color_id
+                    AND wsv.branch_id = $2
+                WHERE p.id = $1 AND p.en_tienda_online = TRUE
+                GROUP BY p.id, g.group_name
+            """
+            params_prod = [product_id, branch_id]
+
+        product = await db.fetch_one(query_product, *params_prod)
+
         if product is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Producto con ID {product_id} no encontrado en la tienda online"
-            )
-        
-        # Get colors for this product
-        colors_query = """
-            SELECT DISTINCT c.id, c.color_name, c.color_hex
-            FROM product_colors pc
-            JOIN colors c ON pc.color_id = c.id
-            WHERE pc.product_id = $1
-            ORDER BY c.color_name
-        """
-        colors = await db.fetch_all(colors_query, product_id)
-        
-        # Get sizes for this product
-        sizes_query = """
-            SELECT DISTINCT s.size_name
-            FROM product_sizes ps
-            JOIN sizes s ON ps.size_id = s.id
-            WHERE ps.product_id = $1
-            ORDER BY s.size_name
-        """
-        sizes = await db.fetch_all(sizes_query, product_id)
-        
-        # Get variants with stock
-        variants_query = """
-            SELECT 
-                wsv.id as variant_id,
-                s.size_name as talle,
-                c.color_name as color,
-                c.color_hex,
-                wsv.quantity as stock,
-                wsv.variant_barcode as barcode
-            FROM warehouse_stock_variants wsv
-            LEFT JOIN sizes s ON wsv.size_id = s.id
-            LEFT JOIN colors c ON wsv.color_id = c.id
-            WHERE wsv.product_id = $1 AND wsv.quantity > 0
-            ORDER BY s.size_name, c.color_name
-        """
-        variants = await db.fetch_all(variants_query, product_id)
-        
-        # Build response
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        # --- 2. VARIANTES ---
+        if branch_id is None:
+            query_variants = """
+                SELECT 
+                    wv.id as variant_id,
+                    s.size_name as talle,
+                    c.color_name as color,
+                    c.color_hex,
+                    wv.displayed_stock as stock,
+                    NULL as barcode
+                FROM web_variants wv
+                LEFT JOIN sizes s ON wv.size_id = s.id
+                LEFT JOIN colors c ON wv.color_id = c.id
+                WHERE wv.product_id = $1 AND wv.is_active = TRUE
+                ORDER BY s.size_name, c.color_name
+            """
+            params_var = [product_id]
+        else:
+            query_variants = """
+                SELECT 
+                    wv.id as variant_id,
+                    s.size_name as talle,
+                    c.color_name as color,
+                    c.color_hex,
+                    COALESCE(wsv.quantity, 0) as stock,
+                    wsv.variant_barcode as barcode
+                FROM web_variants wv
+                LEFT JOIN sizes s ON wv.size_id = s.id
+                LEFT JOIN colors c ON wv.color_id = c.id
+                LEFT JOIN warehouse_stock_variants wsv 
+                    ON wsv.product_id = wv.product_id 
+                    AND wsv.size_id = wv.size_id 
+                    AND wsv.color_id = wv.color_id 
+                    AND wsv.branch_id = $2
+                WHERE wv.product_id = $1 AND wv.is_active = TRUE
+                ORDER BY s.size_name, c.color_name
+            """
+            params_var = [product_id, branch_id]
+
+        variants = await db.fetch_all(query_variants, *params_var)
+
+        # Armamos respuesta usando el modelo OnlineStoreProduct
         product_dict = dict(product)
-        product_dict['colores'] = [
-            {"id": c['id'], "nombre": c['color_name'], "hex": c['color_hex']} 
-            for c in colors
-        ]
-        product_dict['talles'] = [s['size_name'] for s in sizes]
-        product_dict['variantes'] = [
-            {
-                "variant_id": v['variant_id'],
-                "talle": v['talle'],
-                "color": v['color'],
-                "color_hex": v['color_hex'],
-                "stock": v['stock'],
-                "barcode": v['barcode']
-            } 
-            for v in variants
-        ]
+        product_dict['variantes'] = [dict(v) for v in variants]
         
         return product_dict
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
-        logger.error(f"Error fetching product {product_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener el producto: {str(e)}"
-        )
+        print(f"Error GET product: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)

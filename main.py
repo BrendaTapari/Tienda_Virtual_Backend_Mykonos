@@ -79,6 +79,10 @@ app.include_router(user.router, prefix="/auth", tags=["Autenticación"])
 app.include_router(purchases.router, prefix="/purchases", tags=["Compras"])
 app.include_router(contact.router, prefix="/contact", tags=["Contacto"])
 
+#branches
+from routes import branch
+app.include_router(branch.router, prefix="/branch", tags=["Sucursales"])
+
 # Import and include admin router
 from routes import admin
 app.include_router(admin.router, prefix="/admin", tags=["Administración"])
