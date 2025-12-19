@@ -120,20 +120,30 @@ class ProductWithImages(BaseModel):
 
 
 # Online store product model
-class OnlineStoreProduct(BaseModel):
-    """Product model specifically for the online store."""
-    id: int
-    nombre_web: str = Field(..., description="Product name for web")
-    descripcion_web: str = Field(..., description="Product description for web")
-    precio_web: Optional[float] = Field(None, description="Price for web")
-    slug: str = Field(..., description="URL-friendly slug")
-    images: List[str] = Field(default_factory=list, description="List of image URLs")
-    category: Optional[str] = None
-    stock_disponible: int = Field(0, description="Available stock quantity")
-    variantes: List[dict] = Field(default_factory=list, description="Product variants with stock")
-    
+class OnlineStoreProductVariant(BaseModel):
+    variant_id: int        # ID de la variante (puede ser de web_variants o warehouse_stock_variants)
+    talle: str
+    color: str
+    color_hex: str
+    stock: int             # Stock calculado
+    barcode: Optional[str] = None
+
     class Config:
-        from_attributes = True
+        orm_mode = True
+
+class OnlineStoreProduct(BaseModel):
+    id: int
+    nombre_web: str
+    descripcion_web: Optional[str] = None
+    precio_web: Optional[float] = None
+    slug: Optional[str] = None
+    category: str
+    images: List[str] = []
+    stock_disponible: int  # Suma total del stock
+    variantes: List[OnlineStoreProductVariant] # Lista de variantes
+
+    class Config:
+        orm_mode = True
 
 
 # Detailed product model with all information

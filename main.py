@@ -5,8 +5,10 @@ Handles database lifecycle and route configuration.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
+import os
 
 from routes import products, groups, user, purchases, contact
 from config.db_connection import DatabaseManager
@@ -17,6 +19,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
 
 
 @asynccontextmanager
@@ -75,6 +78,34 @@ app.include_router(groups.router, prefix="/groups", tags=["Grupos"])
 app.include_router(user.router, prefix="/auth", tags=["Autenticación"])
 app.include_router(purchases.router, prefix="/purchases", tags=["Compras"])
 app.include_router(contact.router, prefix="/contact", tags=["Contacto"])
+
+# Import and include admin router
+from routes import admin
+app.include_router(admin.router, prefix="/admin", tags=["Administración"])
+
+# Import and include cart and orders routers
+from routes import cart, orders
+app.include_router(cart.router, prefix="/cart", tags=["Carrito"])
+app.include_router(orders.router, prefix="/orders", tags=["Órdenes"])
+
+# Mount static files directory for product images
+# Using shared directory that multiple backends access
+images_dir = "/home/breightend/imagenes-productos"
+if os.path.exists(images_dir):
+    app.mount(
+        "/static/productos",
+        StaticFiles(directory=images_dir),
+        name="productos"
+    )
+    # Also mount at legacy path for backward compatibility
+    app.mount(
+        "/imagenes-productos",
+        StaticFiles(directory=images_dir),
+        name="imagenes"
+    )
+    logger.info(f"Mounted static files directory: {images_dir}")
+else:
+    logger.warning(f"Images directory not found: {images_dir}")
 
 
 @app.get("/")

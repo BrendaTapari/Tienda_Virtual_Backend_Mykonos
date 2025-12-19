@@ -3,7 +3,7 @@ Products API routes - handles all product-related endpoints.
 Uses PostgreSQL database for data persistence.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
 from config.db_connection import db
 from models.product_models import (
@@ -21,12 +21,18 @@ from models.product_models import (
 )
 import logging
 from utils.auth import require_admin
-
+import base64
+from models.imageUpload import ImageUpload
+from models.imageResponse import ImageResponse
+from datetime import datetime
+import os
+import uuid
 logger = logging.getLogger(__name__)
 
 # Create the router
 router = APIRouter()
-
+IMAGES_DIR = "/home/breightend/imagenes-productos"
+IMAGES_BASE_URL = "/static/productos"
 
 # --- ADMIN ENDPOINTS ---
 # NOTE: These must be defined BEFORE /{product_id} route to avoid path conflicts
@@ -211,73 +217,585 @@ async def toggle_product_online(product_id: int, toggle_data: ToggleOnlineReques
         )
 
 
+@router.patch("/{product_id}/web-price", dependencies=[Depends(require_admin)])
+async def update_product_web_price(product_id: int, precio_web: float):
+    """
+    Quick update of product web price (admin only).
+    
+    Path Parameters:
+    - product_id: The ID of the product
+    
+    Query Parameters:
+    - precio_web: New web price
+    
+    Requires: Admin authentication
+    """
+    try:
+        # Check if product exists
+        existing = await db.fetch_one(
+            "SELECT id, nombre_web FROM products WHERE id = $1",
+            product_id
+        )
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto con ID {product_id} no encontrado"
+            )
+        
+        # Update web price
+        result = await db.fetch_one(
+            """
+            UPDATE products
+            SET precio_web = $1, last_modified_date = CURRENT_TIMESTAMP
+            WHERE id = $2
+            RETURNING id, nombre_web, precio_web
+            """,
+            precio_web,
+            product_id
+        )
+        
+        return {
+            "id": result['id'],
+            "nombre_web": result['nombre_web'],
+            "precio_web": result['precio_web'],
+            "message": "Precio actualizado exitosamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product web price: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar el precio: {str(e)}"
+        )
+
+
+@router.patch("/{product_id}/discount", dependencies=[Depends(require_admin)])
+async def apply_product_discount(
+    product_id: int,
+    has_discount: int,
+    discount_percentage: Optional[float] = None,
+    original_price: Optional[float] = None
+):
+    """
+    Apply or remove discount on a specific product (admin only).
+    
+    Path Parameters:
+    - product_id: The ID of the product
+    
+    Query Parameters:
+    - has_discount: 1 to apply discount, 0 to remove
+    - discount_percentage: Discount percentage (required if has_discount=1)
+    - original_price: Original price (auto-calculated if not provided)
+    
+    Behavior:
+    - When applying discount (has_discount=1):
+      - Stores current sale_price as original_price if not already set
+      - Calculates discount_amount and new sale_price
+    - When removing discount (has_discount=0):
+      - Restores original_price to sale_price
+      - Clears discount fields
+    
+    Requires: Admin authentication
+    """
+    try:
+        # Check if product exists
+        product = await db.fetch_one(
+            "SELECT id, sale_price, original_price, has_discount FROM products WHERE id = $1",
+            product_id
+        )
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto con ID {product_id} no encontrado"
+            )
+        
+        if has_discount == 1:
+            # Applying discount
+            if discount_percentage is None or discount_percentage <= 0 or discount_percentage >= 100:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El porcentaje de descuento debe estar entre 0 y 100"
+                )
+            
+            # Determine original price
+            if original_price is None:
+                # Use existing original_price if product already has discount, otherwise use current sale_price
+                if product['has_discount'] == 1 and product['original_price']:
+                    original_price = product['original_price']
+                else:
+                    original_price = product['sale_price']
+            
+            # Calculate discount amount and new price
+            # Ensure calculations are done with floats to avoid potential Decimal issues if not explicitly handled
+            discount_amount = float(original_price) * (discount_percentage / 100)
+            new_sale_price = float(original_price) - discount_amount
+            
+            # Update product
+            result = await db.fetch_one(
+                """
+                UPDATE products
+                SET has_discount = 1,
+                    discount_percentage = $1,
+                    original_price = $2,
+                    discount_amount = $3,
+                    sale_price = $4,
+                    last_modified_date = CURRENT_TIMESTAMP
+                WHERE id = $5
+                RETURNING id, product_name, sale_price, original_price, discount_percentage, discount_amount, has_discount
+                """,
+                discount_percentage,
+                original_price,
+                discount_amount,
+                new_sale_price,
+                product_id
+            )
+            
+            return {
+                "id": result['id'],
+                "product_name": result['product_name'],
+                "original_price": result['original_price'],
+                "discount_percentage": result['discount_percentage'],
+                "discount_amount": result['discount_amount'],
+                "sale_price": result['sale_price'],
+                "has_discount": result['has_discount'],
+                "message": f"Descuento del {discount_percentage}% aplicado exitosamente"
+            }
+        
+        else:
+            # Removing discount
+            if not product['original_price']:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="El producto no tiene descuento aplicado"
+                )
+            
+            # Restore original price
+            result = await db.fetch_one(
+                """
+                UPDATE products
+                SET has_discount = 0,
+                    discount_percentage = 0,
+                    discount_amount = 0,
+                    sale_price = original_price,
+                    last_modified_date = CURRENT_TIMESTAMP
+                WHERE id = $1
+                RETURNING id, product_name, sale_price, has_discount
+                """,
+                product_id
+            )
+            
+            return {
+                "id": result['id'],
+                "product_name": result['product_name'],
+                "sale_price": result['sale_price'],
+                "has_discount": result['has_discount'],
+                "message": "Descuento removido exitosamente, precio restaurado"
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error applying product discount: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al aplicar descuento: {str(e)}"
+        )
+
+from fastapi import UploadFile, File, Form
+from typing import List, Optional
+import os
+import uuid
+
+@router.post("/{product_id}/images", response_model=ImageResponse)
+async def add_product_image(
+    product_id: int,
+    image: ImageUpload,
+    current_user: dict = Depends(require_admin)
+):
+    """
+    Agrega una imagen a un producto.
+    
+    - **product_id**: ID del producto
+    - **image_data**: Imagen codificada en base64
+    - **filename**: Nombre original del archivo
+    
+    Returns: Objeto con id e image_url
+    """
+    try:
+        # Verificar que el producto existe
+        product = await db.fetch_one(
+            "SELECT id FROM products WHERE id = $1", product_id
+        )
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto {product_id} no encontrado"
+            )
+        
+        # Decodificar base64
+        try:
+            image_bytes = base64.b64decode(image.image_data)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Imagen base64 inválida"
+            )
+        
+        # Validar tamaño (opcional, máximo 5MB)
+        if len(image_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Imagen muy grande (máximo 5MB)"
+            )
+        
+        # Generar nombre único para la imagen
+        file_extension = os.path.splitext(image.filename)[1].lower()
+        # Validar extensión
+        allowed_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Extensión no permitida. Use: {', '.join(allowed_extensions)}"
+            )
+        
+        unique_filename = f"{uuid.uuid4()}{file_extension}"
+        file_path = os.path.join(IMAGES_DIR, unique_filename)
+        
+        # Crear directorio si no existe
+        os.makedirs(IMAGES_DIR, exist_ok=True)
+        
+        # Guardar imagen
+        with open(file_path, "wb") as f:
+            f.write(image_bytes)
+        
+        # URL para el frontend
+        image_url = f"{IMAGES_BASE_URL}/{unique_filename}"
+        
+        # Insertar en la base de datos
+        # Insertar en la base de datos
+        # Nota: image_data es BLOB NOT NULL en la base de datos legacy, insertamos bytes vacíos
+        # ya que ahora guardamos el archivo en disco y usamos image_url.
+        result = await db.fetch_one(
+            """
+            INSERT INTO images (image_url, product_id, image_data)
+            VALUES ($1, $2, $3)
+            RETURNING id, image_url
+            """,
+            image_url, product_id, b''  # Empty bytes for legacy BLOB column
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al subir imagen: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al guardar la imagen: {str(e)}"
+        )
+
+
+### Endpoint: DELETE /products/{product_id}/images/{image_id}
+@router.delete("/{product_id}/images/{image_id}")
+async def delete_product_image(
+    product_id: int,
+    image_id: int,
+    current_user: dict = Depends(require_admin)
+):
+    """
+    Elimina una imagen de un producto.
+    
+    - **product_id**: ID del producto
+    - **image_id**: ID de la imagen a eliminar
+    
+    Returns: Mensaje de confirmación
+    """
+    try:
+        # Obtener la imagen
+        image = await db.fetch_one(
+            """
+            SELECT id, image_url FROM images 
+            WHERE id = $1 AND product_id = $2
+            """,
+            image_id, product_id
+        )
+        
+        if not image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Imagen no encontrada"
+            )
+        
+        # Extraer nombre de archivo de la URL
+        filename = image["image_url"].split("/")[-1]
+        file_path = os.path.join(IMAGES_DIR, filename)
+        
+        # Eliminar archivo físico si existe
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logger.warning(f"No se pudo eliminar archivo físico: {e}")
+        
+        # Eliminar de la base de datos
+        await db.execute(
+            "DELETE FROM images WHERE id = $1",
+            image_id
+        )
+        
+        return {"message": "Imagen eliminada correctamente"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al eliminar imagen: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al eliminar la imagen: {str(e)}"
+        )
+
+
+### Endpoint: GET /products/{product_id}/images
+
+@router.get("/{product_id}/images", response_model=list[ImageResponse])
+async def get_product_images(product_id: int):
+    """
+    Obtiene todas las imágenes de un producto.
+    
+    - **product_id**: ID del producto
+    
+    Returns: Lista de objetos con id e image_url
+    """
+    try:
+        images = await db.fetch_all(
+            """
+            SELECT id, image_url 
+            FROM images 
+            WHERE product_id = $1 
+            ORDER BY id DESC
+            """,
+            product_id
+        )
+        return images
+    except Exception as e:
+        logger.error(f"Error al obtener imágenes: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener imágenes: {str(e)}"
+        )
+
+
+## 4. Mantener el PUT endpoint actual para actualizar producto
+
+@router.put("/{product_id}", response_model=ProductResponse)
+async def update_product(product_id: int, product: ProductUpdate):
+    """
+    Update an existing product.
+    
+    Path Parameters:
+    - product_id: The ID of the product to update
+    
+    Request Body:
+    - ProductUpdate model with fields to update (all optional)
+    """
+    try:
+        # First, check if product exists
+        existing = await db.fetch_one("SELECT id FROM products WHERE id = $1", product_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto con ID {product_id} no encontrado"
+            )
+        
+        # Build dynamic update query based on provided fields
+        update_fields = []
+        params = []
+        param_count = 1
+        
+        for field, value in product.dict(exclude_unset=True).items():
+            update_fields.append(f"{field} = ${param_count}")
+            params.append(value)
+            param_count += 1
+        
+        if not update_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se proporcionaron campos para actualizar"
+            )
+        
+        # Add last_modified_date
+        update_fields.append(f"last_modified_date = CURRENT_TIMESTAMP")
+        
+        # Add product_id as the last parameter
+        params.append(product_id)
+        
+        query = f"""
+            UPDATE products
+            SET {', '.join(update_fields)}
+            WHERE id = ${param_count}
+            RETURNING id, product_name, description, cost, sale_price, provider_code,
+                      group_id, provider_id, brand_id, tax, discount,
+                      original_price, discount_percentage, discount_amount,
+                      has_discount, comments, state, 
+                      en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
+                      creation_date, last_modified_date
+        """
+        
+        result = await db.fetch_one(query, *params)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product {product_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar el producto: {str(e)}"
+        )
+
+
+
 # --- VIRTUAL STORE ENDPOINTS ---
 
 @router.get("/", response_model=List[OnlineStoreProduct])
-async def get_all_productos():
+async def get_all_productos(
+    branch_id: Optional[int] = Query(
+        None, 
+        description="ID de la sucursal para filtrar stock. Si es null, muestra el stock general de la web."
+    )
+):
     """
-    Get ALL products available in the online store (no limits).
-    Only returns products where en_tienda_online = TRUE.
-    
-    Returns:
-    - List of all online store products with images, stock, and variants
+    Obtiene productos de la tienda online.
+    - Si NO se envía branch_id: Usa el stock definido manualmente en WEB_VARIANTS.
+    - Si SE envía branch_id: Usa el catálogo de WEB_VARIANTS pero muestra el stock real de WAREHOUSE_STOCK_VARIANTS para esa sucursal.
     """
     try:
-        # Get all products
-        query = """
-            SELECT 
-                p.id,
-                p.nombre_web,
-                p.descripcion_web,
-                p.precio_web,
-                p.slug,
-                COALESCE(g.group_name, 'Sin categoría') as category,
-                COALESCE(
-                    ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
-                    ARRAY[]::TEXT[]
-                ) as images,
-                COALESCE(SUM(wsv.quantity), 0) as stock_disponible
-            FROM products p
-            LEFT JOIN groups g ON p.group_id = g.id
-            LEFT JOIN images i ON i.product_id = p.id
-            LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
-            WHERE p.en_tienda_online = TRUE
-            GROUP BY p.id, g.group_name
-            ORDER BY p.id DESC
-        """
+        # 1. Definimos la consulta PRINCIPAL (Listado de productos)
+        # Necesitamos calcular el "stock total" para la vista de tarjeta del producto
         
-        products = await db.fetch_all(query)
+        if branch_id is None:
+            # --- MODO GLOBAL (WEB) ---
+            # Sumamos el stock manual configurado en WEB_VARIANTS
+            query_products = """
+                SELECT 
+                    p.id,
+                    p.nombre_web,
+                    p.descripcion_web,
+                    p.precio_web,
+                    p.slug,
+                    COALESCE(g.group_name, 'Sin categoría') as category,
+                    COALESCE(
+                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        ARRAY[]::TEXT[]
+                    ) as images,
+                    COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible
+                FROM products p
+                LEFT JOIN groups g ON p.group_id = g.id
+                LEFT JOIN images i ON i.product_id = p.id
+                LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+                WHERE p.en_tienda_online = TRUE
+                GROUP BY p.id, g.group_name
+                ORDER BY p.id DESC
+            """
+            params_products = []
+            
+        else:
+            # --- MODO SUCURSAL ---
+            # Sumamos el stock real de WAREHOUSE_STOCK filtrado por sucursal
+            # Notar que seguimos haciendo JOIN a web_variants para asegurar que solo traemos
+            # productos que TIENEN variante web configurada.
+            query_products = """
+                SELECT 
+                    p.id,
+                    p.nombre_web,
+                    p.descripcion_web,
+                    p.precio_web,
+                    p.slug,
+                    COALESCE(g.group_name, 'Sin categoría') as category,
+                    COALESCE(
+                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        ARRAY[]::TEXT[]
+                    ) as images,
+                    COALESCE(SUM(wsv.quantity), 0) as stock_disponible
+                FROM products p
+                LEFT JOIN groups g ON p.group_id = g.id
+                LEFT JOIN images i ON i.product_id = p.id
+                LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE -- Usa LEFT JOIN para mostrar productos sin variantes aun
+                LEFT JOIN warehouse_stock_variants wsv 
+                    ON wsv.product_id = p.id 
+                    AND wsv.size_id = wv.size_id 
+                    AND wsv.color_id = wv.color_id
+                    AND wsv.branch_id = $1 -- Filtramos por sucursal
+                WHERE p.en_tienda_online = TRUE
+                GROUP BY p.id, g.group_name
+                ORDER BY p.id DESC
+            """
+            params_products = [branch_id]
+
+        # Ejecutamos la consulta principal
+        products = await db.fetch_all(query_products, *params_products)
         
-        # Get variants for each product
+        # 2. Iteramos para buscar las variantes (Detalle)
         result = []
         for product in products:
             product_dict = dict(product)
             
-            # Get variants for this product
-            variants_query = """
-                SELECT 
-                    wsv.id as variant_id,
-                    s.size_name as talle,
-                    c.color_name as color,
-                    c.color_hex,
-                    wsv.quantity as stock,
-                    wsv.variant_barcode as barcode
-                FROM warehouse_stock_variants wsv
-                LEFT JOIN sizes s ON wsv.size_id = s.id
-                LEFT JOIN colors c ON wsv.color_id = c.id
-                WHERE wsv.product_id = $1 AND wsv.quantity > 0
-                ORDER BY s.size_name, c.color_name
-            """
-            variants = await db.fetch_all(variants_query, product['id'])
+            if branch_id is None:
+                # --- QUERY VARIANTES GLOBAL ---
+                # Trae el stock manual de WEB_VARIANTS
+                variants_query = """
+                    SELECT 
+                        wv.id as web_variant_id, -- Usamos el ID de la variante web
+                        s.size_name as talle,
+                        c.color_name as color,
+                        c.color_hex,
+                        wv.displayed_stock as stock, -- Stock manual
+                        '' as barcode -- Opcional, o busca el barcode genérico
+                    FROM web_variants wv
+                    LEFT JOIN sizes s ON wv.size_id = s.id
+                    LEFT JOIN colors c ON wv.color_id = c.id
+                    WHERE wv.product_id = $1 AND wv.is_active = TRUE
+                    ORDER BY s.size_name, c.color_name
+                """
+                variants = await db.fetch_all(variants_query, product['id'])
             
+            else:
+                # --- QUERY VARIANTES SUCURSAL ---
+                # Cruza WEB_VARIANTS con WAREHOUSE_STOCK_VARIANTS
+                variants_query = """
+                    SELECT 
+                        wv.id as web_variant_id,
+                        s.size_name as talle,
+                        c.color_name as color,
+                        c.color_hex,
+                        COALESCE(wsv.quantity, 0) as stock, -- Stock REAL de la sucursal
+                        wsv.variant_barcode as barcode
+                    FROM web_variants wv
+                    LEFT JOIN sizes s ON wv.size_id = s.id
+                    LEFT JOIN colors c ON wv.color_id = c.id
+                    LEFT JOIN warehouse_stock_variants wsv 
+                        ON wsv.product_id = wv.product_id 
+                        AND wsv.size_id = wv.size_id 
+                        AND wsv.color_id = wv.color_id
+                        AND wsv.branch_id = $2  -- Parametro 2: ID Sucursal
+                    WHERE wv.product_id = $1 AND wv.is_active = TRUE -- Parametro 1: ID Producto
+                    ORDER BY s.size_name, c.color_name
+                """
+                variants = await db.fetch_all(variants_query, product['id'], branch_id)
+
+            # Formateamos la respuesta de variantes
             product_dict['variantes'] = [
                 {
-                    "variant_id": v['variant_id'],
+                    "variant_id": v['web_variant_id'], # Importante: el ID ahora es el de WEB_VARIANTS
                     "talle": v['talle'],
                     "color": v['color'],
                     "color_hex": v['color_hex'],
                     "stock": v['stock'],
-                    "barcode": v['barcode']
+                    "barcode": v['barcode'] if v['barcode'] else "WEB-VAR"
                 } 
                 for v in variants
             ]
@@ -287,7 +805,8 @@ async def get_all_productos():
         return result
         
     except Exception as e:
-        logger.error(f"Error fetching productos: {e}")
+        # logger.error(f"Error fetching productos: {e}") 
+        # Asegúrate de importar logger si lo usas
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener productos: {str(e)}"
@@ -593,10 +1112,10 @@ async def create_product(product: ProductCreate):
             detail=f"Error al crear el producto: {str(e)}"
         )
 
-
+"""
 @router.put("/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: int, product: ProductUpdate):
-    """
+    """ """
     Update an existing product.
     
     Path Parameters:
@@ -604,7 +1123,7 @@ async def update_product(product_id: int, product: ProductUpdate):
     
     Request Body:
     - ProductUpdate model with fields to update (all optional)
-    """
+    """"""
     try:
         # First, check if product exists
         existing = await db.fetch_one("SELECT id FROM products WHERE id = $1", product_id)
@@ -636,7 +1155,7 @@ async def update_product(product_id: int, product: ProductUpdate):
         # Add product_id as the last parameter
         params.append(product_id)
         
-        query = f"""
+        query = f""""""
             UPDATE products
             SET {', '.join(update_fields)}
             WHERE id = ${param_count}
@@ -646,8 +1165,7 @@ async def update_product(product_id: int, product: ProductUpdate):
                       has_discount, comments, state, 
                       en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
                       creation_date, last_modified_date
-        """
-        
+        """"""
         result = await db.fetch_one(query, *params)
         
         return result
@@ -659,7 +1177,7 @@ async def update_product(product_id: int, product: ProductUpdate):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al actualizar el producto: {str(e)}"
-        )
+        ) """
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)

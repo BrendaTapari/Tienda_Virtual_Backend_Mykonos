@@ -5,7 +5,10 @@ Provides dependency injection functions for protecting endpoints.
 
 from fastapi import Header, HTTPException, status
 from typing import Optional
-from config.db_connection import DatabaseManager
+from config.db_connection import DatabaseManager, db
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
@@ -78,3 +81,52 @@ async def require_admin(authorization: Optional[str] = Header(None)) -> dict:
         )
     
     return user
+
+
+async def get_current_web_user(authorization: Optional[str] = Header(None)) -> dict:
+    """
+    Get current authenticated web user from session token.
+    
+    Args:
+        authorization: Bearer token from Authorization header
+        
+    Returns:
+        dict: User information
+        
+    Raises:
+        HTTPException: If token is invalid or user not found
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No se proporcionó token de autenticación"
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        user = await db.fetch_one(
+            """
+            SELECT id, username, email, fullname, role, status
+            FROM web_users
+            WHERE session_token = $1 AND status = 'active'
+            """,
+            token
+        )
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token inválido o expirado"
+            )
+        
+        return dict(user)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting current web user: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al verificar autenticación"
+        )

@@ -39,6 +39,8 @@ class TABLES(Enum):
         "sales_payments"  # Relación muchos a muchos entre bancos y métodos de pago
     )
     PURCHASES_PAYMENTS = "purchases_payments"
+    WEB_VARIANTS = "web_variants"
+    DISCOUNTS = "discounts"
 
 
 DATABASE_TABLES = {
@@ -228,7 +230,7 @@ DATABASE_TABLES = {
             },
             {  # Relación con tabla de variantes
                 "column": "variant_id",
-                "reference_table": TABLES.WAREHOUSE_STOCK_VARIANTS,
+                "reference_table": TABLES.WEB_VARIANTS,
                 "reference_column": "id",
                 "export_column_name": "variant_id",  # <- columna de referencia cuando se exportan tablas
             },
@@ -296,7 +298,6 @@ DATABASE_TABLES = {
             "has_discount": "INTEGER DEFAULT 0",  # Indica si el producto tiene descuento aplicado.
             "comments": "TEXT",  # Comentarios adicionales sobre el producto.
             "user_id": "INTEGER",  # ID del usuario que creó o modificó el producto.
-            "images_ids": "INTEGER",  # Eliminar.
             "brand_id": "INTEGER",  # ID de la marca del producto.
             "creation_date": "timestamp [CURRENT_TIMESTAMP]",  # Fecha de creación del producto, se establece por defecto a la fecha y hora actuales.
             "last_modified_date": "TEXT",  # Fecha de la última modificación del producto.
@@ -886,6 +887,63 @@ DATABASE_TABLES = {
                 "reference_table": TABLES.BANKS_PAYMENT_METHODS,
                 "reference_column": "id",
                 "export_column_name": "method_name",
+            },
+        ],
+    },
+    TABLES.WEB_VARIANTS: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "product_id": "INTEGER NOT NULL",
+            "size_id": "INTEGER NOT NULL",
+            "color_id": "INTEGER NOT NULL",
+            "displayed_stock": "INTEGER DEFAULT 0", 
+            "is_active": "BOOLEAN DEFAULT 1",
+            "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+        },
+        "foreign_keys": [
+             {
+                "column": "product_id",
+                "reference_table": TABLES.PRODUCTS,
+                "reference_column": "id",
+                "export_column_name": "product_name",
+            },
+            {
+                "column": "size_id",
+                "reference_table": TABLES.SIZES,
+                "reference_column": "id",
+                "export_column_name": "size_name",
+            },
+            {
+                "column": "color_id",
+                "reference_table": TABLES.COLORS,
+                "reference_column": "id",
+                "export_column_name": "color_name",
+            },
+        ],
+        # constraint para evitar duplicados de variantes en la web
+        "constraints": ["UNIQUE(product_id, size_id, color_id)"] 
+    },
+    TABLES.DISCOUNTS: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "discount_type": "TEXT NOT NULL",
+            "target_id": "INTEGER",
+            "target_name": "TEXT",
+            "discount_percentage": "REAL NOT NULL",
+            "start_date": "timestamp",
+            "end_date": "timestamp",
+            "is_active": "BOOLEAN DEFAULT 1",
+            "apply_to_children": "BOOLEAN DEFAULT 0",
+            "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+            "created_by_user_id": "INTEGER",
+            "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+        },
+        "foreign_keys": [
+            {
+                "column": "created_by_user_id",
+                "reference_table": TABLES.USERS,
+                "reference_column": "id",
+                "export_column_name": "username",
             },
         ],
     },

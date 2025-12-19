@@ -150,3 +150,43 @@ class ResendVerification(BaseModel):
             }
         }
 
+
+# Admin user management models
+class UserListResponse(BaseModel):
+    """Model for admin user list response."""
+    id: int
+    username: str
+    fullname: Optional[str] = None
+    email: Optional[str] = None
+    role: str
+    status: str
+    email_verified: bool
+    created_at: Optional[datetime] = None
+    total_purchases: int = 0
+    
+    class Config:
+        from_attributes = True
+
+
+class UpdateUserRole(BaseModel):
+    """Model for updating user role."""
+    role: str = Field(..., description="New role (admin or customer)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "role": "admin"
+            }
+        }
+
+
+class UpdateUserStatus(BaseModel):
+    """Model for updating user status."""
+    status: str = Field(..., description="New status (active or inactive)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "inactive"
+            }
+        }
