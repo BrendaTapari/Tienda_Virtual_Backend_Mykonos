@@ -110,3 +110,61 @@ async def get_products_variants_by_branch(product_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener los productos variantes por sucursal: {str(e)}"
         )
+
+@router.get("/webProductsVariantsByBranch/{product_id}/{branch_id}", response_model=List[BranchWithStock])
+async def get_web_products_variants_by_branch(product_id: int, branch_id: int):
+    #Obtiene los productos variantes por sucursal y producto que tienen un stock web mayor a 0
+    try:
+        async with await db.transaction() as conn:
+            # Check if branch exists
+            branch_name = await conn.fetchval("SELECT name FROM storage WHERE id = $1", branch_id)
+            if not branch_name:
+                 raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+
+            query = """
+                SELECT 
+                    wv.id as variant_id,
+                    sz.size_name as size,
+                    c.color_name as color,
+                    c.color_hex as color_hex,
+                    COALESCE(wvba.cantidad_asignada, 0) as quantity,
+                    wv.displayed_stock as cantidad_web,
+                    wv.is_active as mostrar_en_web
+                FROM web_variants wv
+                LEFT JOIN web_variant_branch_assignment wvba 
+                    ON wv.id = wvba.variant_id AND wvba.branch_id = $2
+                LEFT JOIN sizes sz ON wv.size_id = sz.id
+                LEFT JOIN colors c ON wv.color_id = c.id
+                WHERE wv.product_id = $1
+                ORDER BY sz.size_name, c.color_name
+            """
+            
+            rows = await conn.fetch(query, product_id, branch_id)
+            
+            variants = []
+            for row in rows:
+                variants.append({
+                    "variant_id": row['variant_id'],
+                    "size": row['size'],
+                    "color": row['color'],
+                    "color_hex": row['color_hex'],
+                    "quantity": row['quantity'], # This is the assigned stock for this branch
+                    "barcode": None, # Not in web_variants
+                    "cantidad_web": row['cantidad_web'],
+                    "mostrar_en_web": row['mostrar_en_web']
+                })
+            
+            return [{
+                "branch_id": branch_id,
+                "branch_name": branch_name,
+                "variants": variants
+            }]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching web products variants by branch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener los productos variantes web por sucursal: {str(e)}"
+        )

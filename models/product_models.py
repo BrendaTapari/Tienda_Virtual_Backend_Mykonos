@@ -141,6 +141,7 @@ class OnlineStoreProduct(BaseModel):
     images: List[str] = []
     stock_disponible: int  # Suma total del stock
     variantes: List[OnlineStoreProductVariant] # Lista de variantes
+    discount_percentage: Optional[float] = 0
 
     class Config:
         orm_mode = True
@@ -202,3 +203,17 @@ class ToggleOnlineRequest(BaseModel):
     descripcion_web: Optional[str] = Field(None, description="Product description for online store")
     precio_web: Optional[float] = Field(None, description="Price for online store")
     slug: Optional[str] = Field(None, description="URL-friendly slug (auto-generated if not provided)")
+
+
+class ProductInfoMatrix(BaseModel):
+    """Model for the product info matrix endpoint."""
+    id: int
+    product_name: str
+    precio_web: Optional[float] = None
+    discount: Optional[float] = Field(0, description="Discount percentage")
+    stock: int = Field(0, description="Web stock available")
+    group: Optional[str] = None
+    provider: Optional[str] = None
+
+    class Config:
+        from_attributes = True

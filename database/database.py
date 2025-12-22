@@ -41,6 +41,7 @@ class TABLES(Enum):
     PURCHASES_PAYMENTS = "purchases_payments"
     WEB_VARIANTS = "web_variants"
     DISCOUNTS = "discounts"
+    WEB_VARIANT_BRANCH_ASSIGNMENT = "web_variant_branch_assignment"
 
 
 DATABASE_TABLES = {
@@ -947,4 +948,30 @@ DATABASE_TABLES = {
             },
         ],
     },
+    TABLES.WEB_VARIANT_BRANCH_ASSIGNMENT: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "variant_id": "INTEGER NOT NULL",
+            "branch_id": "INTEGER NOT NULL",
+            "cantidad_asignada": "INTEGER NOT NULL DEFAULT 0",
+            "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+            "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+        },
+        "foreign_keys": [
+            {
+                "column": "variant_id",
+                "reference_table": TABLES.WEB_VARIANTS,
+                "reference_column": "id",
+                "export_column_name": "id",
+            },
+            {
+                "column": "branch_id",
+                "reference_table": TABLES.STORAGE,
+                "reference_column": "id",
+                "export_column_name": "name",
+            },
+        ],
+        "constraints": ["UNIQUE(variant_id, branch_id)"]
+    },
+
 }

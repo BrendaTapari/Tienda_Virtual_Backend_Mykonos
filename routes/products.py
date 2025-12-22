@@ -17,7 +17,8 @@ from models.product_models import (
     AddProductImage,
     ProductDetail,
     ProductAllResponse,
-    ToggleOnlineRequest
+    ToggleOnlineRequest,
+    ProductInfoMatrix
 )
 from schemas.product_schemas import (
     StockSucursalInput,
@@ -39,6 +40,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 IMAGES_DIR = "/home/breightend/imagenes-productos"
 IMAGES_BASE_URL = "/static/productos"
+
+
+@router.get("/info-matrix", response_model=List[ProductInfoMatrix], dependencies=[Depends(require_admin)])
+async def get_products_info_matrix():
+    """
+    Get a matrix of product information: Name, Web Price, Discount, Stock, Group, Provider.
+    
+    Returns:
+    - List of products with specific fields for the info matrix view.
+    """
+    try:
+        query = """
+            SELECT 
+                p.id,
+                p.product_name,
+                p.precio_web,
+                p.discount_percentage as discount,
+                COALESCE(SUM(wv.displayed_stock), 0) as stock,
+                g.group_name as group,
+                e.entity_name as provider
+            FROM products p
+            LEFT JOIN groups g ON p.group_id = g.id
+            LEFT JOIN entities e ON p.provider_id = e.id
+            LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+            GROUP BY p.id, g.group_name, e.entity_name
+            ORDER BY p.id DESC
+        """
+        
+        products = await db.fetch_all(query)
+        return products
+        
+    except Exception as e:
+        logger.error(f"Error fetching product info matrix: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener la matriz de información: {str(e)}"
+        )
 
 
 @router.get("/all", response_model=List[ProductAllResponse], dependencies=[Depends(require_admin)])
@@ -749,16 +787,21 @@ async def get_all_productos(
                     p.descripcion_web,
                     p.precio_web,
                     p.slug,
+                    g.group_name,
                     COALESCE(g.group_name, 'Sin categoría') as category,
                     COALESCE(
                         ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
                         ARRAY[]::TEXT[]
                     ) as images,
-                    COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible
+                    COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible,
+                    COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
                 FROM products p
                 LEFT JOIN groups g ON p.group_id = g.id
                 LEFT JOIN images i ON i.product_id = p.id
                 LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+                LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                    AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                    AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
                 WHERE p.en_tienda_online = TRUE
                 GROUP BY p.id, g.group_name
                 ORDER BY p.id DESC
@@ -782,7 +825,8 @@ async def get_all_productos(
                         ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
                         ARRAY[]::TEXT[]
                     ) as images,
-                    COALESCE(SUM(wsv.quantity), 0) as stock_disponible
+                    COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
+                    COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
                 FROM products p
                 LEFT JOIN groups g ON p.group_id = g.id
                 LEFT JOIN images i ON i.product_id = p.id
@@ -792,6 +836,9 @@ async def get_all_productos(
                     AND wsv.size_id = wv.size_id 
                     AND wsv.color_id = wv.color_id
                     AND wsv.branch_id = $1 -- Filtramos por sucursal
+                LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                    AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                    AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
                 WHERE p.en_tienda_online = TRUE
                 GROUP BY p.id, g.group_name
                 ORDER BY p.id DESC
@@ -936,11 +983,15 @@ async def get_productos_by_group(groupName: str):
                     ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
                     ARRAY[]::TEXT[]
                 ) as images,
-                COALESCE(SUM(wsv.quantity), 0) as stock_disponible
+                COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
+                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
             FROM products p
             LEFT JOIN groups g ON p.group_id = g.id
             LEFT JOIN images i ON i.product_id = p.id
             LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
+            LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
             WHERE p.en_tienda_online = TRUE AND p.group_id IN ({placeholders})
             GROUP BY p.id, g.group_name
             ORDER BY p.id DESC
@@ -1476,3 +1527,82 @@ async def delete_product_image(image_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al eliminar la imagen: {str(e)}"
         )
+
+@router.get("/search-by-barcode/{barcode}", response_model=ProductResponse)
+async def search_product_by_barcode(barcode: str):
+    """
+    Busca un producto por su código de barras.
+    Busca primero en variant_barcode (warehouse_stock_variants) y luego en provider_code (products).
+    """
+    try:
+        # 1. Intentar buscar por variant_barcode en warehouse_stock_variants
+        query_variant = """
+            SELECT product_id 
+            FROM warehouse_stock_variants 
+            WHERE variant_barcode = $1
+            LIMIT 1
+        """
+        product_id = await db.fetch_val(query_variant, barcode)
+        
+        # 2. Si no se encuentra, intentar buscar por provider_code en products
+        if not product_id:
+            query_product_code = "SELECT id FROM products WHERE provider_code = $1"
+            product_id = await db.fetch_val(query_product_code, barcode)
+            
+        if not product_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto con código de barras {barcode} no encontrado"
+            )
+
+        # 3. Obtener la información del producto
+        query_product = """
+            SELECT 
+                id,
+                product_name,
+                description,
+                cost,
+                sale_price,
+                provider_code,
+                group_id,
+                provider_id,
+                brand_id,
+                tax,
+                discount,
+                original_price,
+                discount_percentage,
+                discount_amount,
+                has_discount,
+                comments,
+                state,
+                en_tienda_online,
+                nombre_web,
+                descripcion_web,
+                slug,
+                precio_web,
+                creation_date,
+                last_modified_date,
+                user_id
+            FROM products
+            WHERE id = $1
+        """
+        
+        product = await db.fetch_one(query_product, product_id)
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto con ID {product_id} no encontrado"
+            )
+            
+        return dict(product)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al buscar producto por barcode {barcode}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al buscar producto: {str(e)}"
+        )
+
