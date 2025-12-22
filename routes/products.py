@@ -44,13 +44,17 @@ IMAGES_BASE_URL = "/static/productos"
 
 
 @router.get("/all", response_model=List[ProductAllResponse], dependencies=[Depends(require_admin)])
-async def get_all_products_admin(provider_code: Optional[str] = None):
+async def get_all_products_admin(
+    provider_code: Optional[str] = None,
+    barcode: Optional[str] = None
+):
     """
     Get ALL products from the database (admin only).
     Not filtered by en_tienda_online - returns everything.
     
     Query Parameters:
-    - provider_code: Optional filter by barcode/provider code
+    - provider_code: Optional filter by provider code (product main code)
+    - barcode: Optional filter by variant barcode (scanned code)
     
     Requires: Admin authentication
     """
@@ -64,19 +68,44 @@ async def get_all_products_admin(provider_code: Optional[str] = None):
                 p.en_tienda_online,
                 p.group_id,
                 p.description,
-                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
+                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
+                e.entity_name as provider_name,
+                g.group_name,
+                (SELECT image_url FROM images WHERE product_id = p.id ORDER BY id ASC LIMIT 1) as image_url
             FROM products p
             LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
                 AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
                 AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
+            LEFT JOIN entities e ON p.provider_id = e.id
+            LEFT JOIN groups g ON p.group_id = g.id
         """
+        
         params = []
+        where_added = False
         
+        if barcode:
+            # Specific barcode search (exact/trimmed)
+            query += " LEFT JOIN warehouse_stock_variants wsv_b ON wsv_b.product_id = p.id"
+            query += " WHERE TRIM(wsv_b.variant_barcode) ILIKE $1"
+            params.append(barcode.strip())
+            where_added = True
+            
         if provider_code:
-            query += " WHERE p.provider_code ILIKE $1"
+            prefix = " AND " if where_added else " WHERE "
+            # Search in BOTH provider_code AND variant_barcode
+            # We need to join wsv if not already joined (using a different alias to be safe or reused?)
+            # Validating if we need a separate join or can reuse. 
+            # Safest is to just add the join if barcode wasn't used, or use a general join.
+            # However, to avoid complexity, let's just add a LEFT JOIN for this search.
+            # Using independent alias to avoid conflict if both params are present (unlikely but safe).
+            query += " LEFT JOIN warehouse_stock_variants wsv_p ON wsv_p.product_id = p.id"
+            
+            # Logic: provider_code matches product code OR variant barcode
+            query += f"{prefix} (p.provider_code ILIKE ${len(params) + 1} OR TRIM(wsv_p.variant_barcode) ILIKE ${len(params) + 1})"
             params.append(f"%{provider_code}%")
+            where_added = True
         
-        query += " GROUP BY p.id ORDER BY p.id DESC"
+        query += " GROUP BY p.id, e.entity_name, g.group_name ORDER BY p.id DESC"
         
         products = await db.fetch_all(query, *params) if params else await db.fetch_all(query)
         
@@ -87,6 +116,112 @@ async def get_all_products_admin(provider_code: Optional[str] = None):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener todos los productos: {str(e)}"
+        )
+
+@router.get("/allProductsInfo/{product_id}", response_model=ProductInfoMatrix, dependencies=[Depends(require_admin)])
+async def get_all_products_info(product_id: int):
+    """
+    Get all products information for a specific product (admin only).
+    
+    Path Parameters:
+    - product_id: The ID of the product to get information for
+    
+    Returns:
+    - ProductInfoMatrix: All products information for the specified product
+    
+    Requires: Admin authentication
+    """
+    try:
+        # 1. Main Product Query
+        query_product = """
+            SELECT 
+                p.id,
+                p.product_name,
+                p.description,
+                p.cost,
+                p.sale_price,
+                p.original_price,
+                p.provider_code,
+                p.en_tienda_online,
+                p.nombre_web,
+                p.precio_web,
+                e.entity_name as provider_name,
+                g.group_name,
+                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
+            FROM products p
+            LEFT JOIN entities e ON p.provider_id = e.id
+            LEFT JOIN groups g ON p.group_id = g.id
+            LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
+            WHERE p.id = $1
+            GROUP BY p.id, e.entity_name, g.group_name
+        """
+        product = await db.fetch_one(query_product, product_id)
+        
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        # 2. Variants Query (Sizes, Colors, Stock, Barcode)
+        # Assuming we want to aggregate total stock across all branches for "stock"
+        # Since we don't have a specific branch filter here.
+        query_variants = """
+            SELECT 
+                wsv.id,
+                s.size_name as size,
+                c.color_name as color,
+                SUM(wsv.quantity) as stock,
+                wsv.variant_barcode as barcode
+            FROM warehouse_stock_variants wsv
+            LEFT JOIN sizes s ON wsv.size_id = s.id
+            LEFT JOIN colors c ON wsv.color_id = c.id
+            WHERE wsv.product_id = $1
+            GROUP BY wsv.id, s.size_name, c.color_name, wsv.variant_barcode
+        """
+        variants = await db.fetch_all(query_variants, product_id)
+        
+        # 3. Images Query
+        query_images = """
+            SELECT image_url FROM images WHERE product_id = $1 ORDER BY id ASC
+        """
+        images_result = await db.fetch_all(query_images, product_id)
+        images = [img['image_url'] for img in images_result]
+        
+        # 4. Web Stock (from web_variants displayed_stock)
+        query_web_stock = """
+            SELECT SUM(displayed_stock) 
+            FROM web_variants 
+            WHERE product_id = $1 AND is_active = TRUE
+        """
+        web_stock = await db.fetch_val(query_web_stock, product_id) or 0
+
+        # Construct Response
+        return {
+            "id": product['id'],
+            "product_name": product['product_name'],
+            "description": product['description'],
+            "cost": product['cost'],
+            "sale_price": product['sale_price'],
+            "original_price": product['original_price'],
+            "discount_percentage": product['discount_percentage'],
+            "provider_code": product['provider_code'],
+            "provider_name": product['provider_name'],
+            "group_name": product['group_name'],
+            "en_tienda_online": product['en_tienda_online'],
+            "nombre_web": product['nombre_web'],
+            "precio_web": product['precio_web'],
+            "stock_web": int(web_stock),
+            "images": images,
+            "variants": [dict(v) for v in variants]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching all products information: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener la informacion del producto: {str(e)}"
         )
 
 
@@ -1627,3 +1762,30 @@ async def search_product_by_barcode(barcode: str):
             detail=f"Error al buscar producto: {str(e)}"
         )
 
+@router.get("/debug-barcode/{barcode}", tags=["Debug"])
+async def debug_barcode_lookup(barcode: str):
+    """
+    Debug endpoint to check if a barcode exists in the database.
+    """
+    try:
+        # 1. Exact match in warehouse_stock_variants
+        query_exact = "SELECT * FROM warehouse_stock_variants WHERE variant_barcode = $1"
+        exact_matches = await db.fetch_all(query_exact, barcode)
+        
+        # 2. Case-insensitive match in warehouse_stock_variants
+        query_ilike = "SELECT * FROM warehouse_stock_variants WHERE variant_barcode ILIKE $1"
+        ilike_matches = await db.fetch_all(query_ilike, f"%{barcode}%")
+        
+        # 3. Match in products (provider_code)
+        query_provider = "SELECT * FROM products WHERE provider_code ILIKE $1"
+        provider_matches = await db.fetch_all(query_provider, f"%{barcode}%")
+        
+        return {
+            "searched_barcode": barcode,
+            "warehouse_stock_variants_exact": [dict(m) for m in exact_matches],
+            "warehouse_stock_variants_ilike": [dict(m) for m in ilike_matches],
+            "products_provider_code": [dict(m) for m in provider_matches],
+            "message": "Debug results from database"
+        }
+    except Exception as e:
+        return {"error": str(e)}

@@ -191,6 +191,9 @@ class ProductAllResponse(BaseModel):
     en_tienda_online: bool = False
     group_id: Optional[int] = None
     description: Optional[str] = None
+    provider_name: Optional[str] = None
+    group_name: Optional[str] = None
+    image_url: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -205,15 +208,35 @@ class ToggleOnlineRequest(BaseModel):
     slug: Optional[str] = Field(None, description="URL-friendly slug (auto-generated if not provided)")
 
 
+class ProductVariantInfo(BaseModel):
+    id: int
+    size: str
+    color: str
+    stock: int
+    barcode: Optional[str] = None
+
 class ProductInfoMatrix(BaseModel):
     """Model for the product info matrix endpoint."""
     id: int
     product_name: str
+    description: Optional[str] = None
+    cost: Optional[float] = None
+    sale_price: Optional[float] = None
+    original_price: Optional[float] = 0
+    discount_percentage: Optional[float] = 0
+    provider_code: Optional[str] = None
+    provider_name: Optional[str] = None
+    group_name: Optional[str] = None
+    
+    # Web specific
+    en_tienda_online: bool = False
+    nombre_web: Optional[str] = None
     precio_web: Optional[float] = None
-    discount: Optional[float] = Field(0, description="Discount percentage")
-    stock: int = Field(0, description="Web stock available")
-    group: Optional[str] = None
-    provider: Optional[str] = None
+    stock_web: int = Field(0, description="Web stock available")
+    
+    # Collections
+    images: List[str] = []
+    variants: List[ProductVariantInfo] = []
 
     class Config:
         from_attributes = True
