@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 from typing import Optional, List
 
+from datetime import datetime
+
 class BranchResponse(BaseModel):
     id: int
     name: str
@@ -30,4 +32,6 @@ class BranchWithStock(BaseModel):
     group_name: Optional[str] = None
     provider_name: Optional[str] = None
     discount_percentage: Optional[float] = 0
+    discount_start_date: Optional[datetime] = None
+    discount_end_date: Optional[datetime] = None
     variants: List[VariantStock]

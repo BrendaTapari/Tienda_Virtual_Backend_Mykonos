@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
+from datetime import datetime
 
 # --- SCHEMAS (Pydantic) ---
 
@@ -19,6 +20,8 @@ class ProductoUpdateSchema(BaseModel):
     en_tienda_online: Optional[bool] = None
     variantes: Optional[List[VarianteUpdateInput]] = []
     discount_percentage: Optional[float] = 0
+    discount_start_date: Optional[datetime] = None
+    discount_end_date: Optional[datetime] = None
 
     # Configuración V2
     model_config = ConfigDict(from_attributes=True)

@@ -673,19 +673,22 @@ async def get_all_discounts():
                 d.id as discount_id,
                 d.discount_type as type,
                 d.target_id,
-                d.target_name,
+                COALESCE(d.target_name, p_name.product_name, 'Sin nombre') as target_name,
                 d.discount_percentage,
                 d.start_date,
                 d.end_date,
                 d.is_active,
                 d.created_at,
-                COUNT(p.id) as affected_products
+                CASE 
+                    WHEN d.discount_type = 'product' THEN 1
+                    ELSE COUNT(DISTINCT p.id)
+                END as affected_products
             FROM discounts d
+            LEFT JOIN products p_name ON d.discount_type = 'product' AND d.target_id = p_name.id
             LEFT JOIN products p ON (
-                (d.discount_type = 'group' AND p.group_id = d.target_id) OR
-                (d.discount_type = 'product' AND p.id = d.target_id)
-            ) AND p.has_discount = 1
-            GROUP BY d.id, d.discount_type, d.target_id, d.target_name, d.discount_percentage,
+                d.discount_type = 'group' AND p.group_id = d.target_id
+            )
+            GROUP BY d.id, d.discount_type, d.target_id, d.target_name, p_name.product_name, d.discount_percentage,
                      d.start_date, d.end_date, d.is_active, d.created_at
             ORDER BY d.created_at DESC
             """

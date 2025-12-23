@@ -46,7 +46,9 @@ IMAGES_BASE_URL = "/static/productos"
 @router.get("/all", response_model=List[ProductAllResponse], dependencies=[Depends(require_admin)])
 async def get_all_products_admin(
     provider_code: Optional[str] = None,
-    barcode: Optional[str] = None
+    barcode: Optional[str] = None,
+    search: Optional[str] = None,
+    group_id: Optional[int] = None
 ):
     """
     Get ALL products from the database (admin only).
@@ -55,6 +57,8 @@ async def get_all_products_admin(
     Query Parameters:
     - provider_code: Optional filter by provider code (product main code)
     - barcode: Optional filter by variant barcode (scanned code)
+    - search: Optional general search (Name, Description, Provider Code, Barcode)
+    - group_id: Optional filter by group/category
     
     Requires: Admin authentication
     """
@@ -93,17 +97,23 @@ async def get_all_products_admin(
             
         if provider_code:
             prefix = " AND " if where_added else " WHERE "
-            # Search in BOTH provider_code AND variant_barcode
-            # We need to join wsv if not already joined (using a different alias to be safe or reused?)
-            # Validating if we need a separate join or can reuse. 
-            # Safest is to just add the join if barcode wasn't used, or use a general join.
-            # However, to avoid complexity, let's just add a LEFT JOIN for this search.
-            # Using independent alias to avoid conflict if both params are present (unlikely but safe).
             query += " LEFT JOIN warehouse_stock_variants wsv_p ON wsv_p.product_id = p.id"
-            
-            # Logic: provider_code matches product code OR variant barcode
             query += f"{prefix} (p.provider_code ILIKE ${len(params) + 1} OR TRIM(wsv_p.variant_barcode) ILIKE ${len(params) + 1})"
             params.append(f"%{provider_code}%")
+            where_added = True
+
+        if search:
+            # General search across multiple fields
+            query += " LEFT JOIN warehouse_stock_variants wsv_search ON wsv_search.product_id = p.id"
+            prefix = " AND " if where_added else " WHERE "
+            query += f"{prefix} (p.product_name ILIKE ${len(params) + 1} OR p.description ILIKE ${len(params) + 1} OR p.provider_code ILIKE ${len(params) + 1} OR TRIM(wsv_search.variant_barcode) ILIKE ${len(params) + 1})"
+            params.append(f"%{search}%")
+            where_added = True
+            
+        if group_id:
+            prefix = " AND " if where_added else " WHERE "
+            query += f"{prefix} p.group_id = ${len(params) + 1}"
+            params.append(group_id)
             where_added = True
         
         query += " GROUP BY p.id, e.entity_name, g.group_name ORDER BY p.id DESC"
@@ -776,15 +786,63 @@ async def update_product(product_id: int, payload: ProductoUpdateSchema):
                         "SELECT id FROM discounts WHERE discount_type='product' AND target_id=$1 AND is_active=TRUE",
                         product_id
                     )
+                    
+                    # Prepare date updates
+                    start_date_val = payload.discount_start_date
+                    end_date_val = payload.discount_end_date
+                    
                     if existing_disc:
-                        await conn.execute(
-                            "UPDATE discounts SET discount_percentage=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
-                            payload.discount_percentage, existing_disc
-                        )
+                        # Update existing discount
+                        update_disc_query = "UPDATE discounts SET discount_percentage=$1, updated_at=CURRENT_TIMESTAMP"
+                        update_disc_params = [payload.discount_percentage, existing_disc]
+                        param_idx = 3
+                        
+                        if start_date_val is not None:
+                            update_disc_query += f", start_date=${param_idx}"
+                            update_disc_params.append(start_date_val)
+                            param_idx += 1
+                            
+                        if end_date_val is not None:
+                            update_disc_query += f", end_date=${param_idx}"
+                            update_disc_params.append(end_date_val)
+                            param_idx += 1
+                            
+                        update_disc_query += f" WHERE id=$2"
+                        
+                        await conn.execute(update_disc_query, *update_disc_params)
                     else:
+                        # Insert new discount
+                        # Fetch product name for target_name if possible (from existing var or query)
+                        prod_name = existing.get('product_name') 
+                        # Note: 'existing' variable in update_product only fetched id. Need to fetch name or rely on fallback in get.
+                        # Ideally fetch it. But 'existing' query at L723 is "SELECT id ...".
+                        # Let's update that query or fetch it now.
+                        if not prod_name:
+                             prod_name = await conn.fetchval("SELECT product_name FROM products WHERE id=$1", product_id)
+
+                        insert_cols = ["discount_type", "target_id", "target_name", "discount_percentage", "is_active"]
+                        insert_vals = ["'product'", "$1", "$2", "$3", "TRUE"]
+                        insert_params = [product_id, prod_name, payload.discount_percentage]
+                        param_idx = 4
+                        
+                        if start_date_val is not None:
+                            insert_cols.append("start_date")
+                            insert_vals.append(f"${param_idx}")
+                            insert_params.append(start_date_val)
+                            param_idx += 1
+                        else:
+                            insert_cols.append("start_date")
+                            insert_vals.append("CURRENT_TIMESTAMP")
+                            
+                        if end_date_val is not None:
+                            insert_cols.append("end_date")
+                            insert_vals.append(f"${param_idx}")
+                            insert_params.append(end_date_val)
+                            param_idx += 1
+                        
                         await conn.execute(
-                            "INSERT INTO discounts (discount_type, target_id, discount_percentage, is_active, start_date) VALUES ('product', $1, $2, TRUE, CURRENT_TIMESTAMP)",
-                            product_id, payload.discount_percentage
+                            f"INSERT INTO discounts ({', '.join(insert_cols)}) VALUES ({', '.join(insert_vals)})",
+                            *insert_params
                         )
                 else:
                     # Deactivate discount if sent as 0

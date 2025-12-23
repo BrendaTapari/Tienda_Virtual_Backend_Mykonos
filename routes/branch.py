@@ -81,12 +81,18 @@ async def get_products_variants_by_branch(product_id: int):
             
             rows = await conn.fetch(query, product_id)
 
-            # Fetch active discount
-            discount_val = await conn.fetchval("""
-                SELECT COALESCE(MAX(discount_percentage), 0) FROM discounts 
+            # Fetch active discount with dates
+            discount_info = await conn.fetchrow("""
+                SELECT 
+                    discount_percentage,
+                    start_date,
+                    end_date
+                FROM discounts 
                 WHERE discount_type='product' AND target_id=$1 AND is_active = TRUE
                 AND (start_date IS NULL OR start_date <= CURRENT_TIMESTAMP) 
                 AND (end_date IS NULL OR end_date >= CURRENT_TIMESTAMP)
+                ORDER BY discount_percentage DESC
+                LIMIT 1
             """, product_id)
 
             # Fetch group name
@@ -129,8 +135,20 @@ async def get_products_variants_by_branch(product_id: int):
             
         # Assign discount to all branches
         result_list = list(branches_dict.values())
+        
+        disc_perc = 0
+        disc_start = None
+        disc_end = None
+        
+        if discount_info:
+            disc_perc = discount_info['discount_percentage']
+            disc_start = discount_info['start_date']
+            disc_end = discount_info['end_date']
+            
         for branch_data in result_list:
-            branch_data["discount_percentage"] = discount_val or 0
+            branch_data["discount_percentage"] = disc_perc
+            branch_data["discount_start_date"] = disc_start
+            branch_data["discount_end_date"] = disc_end
             branch_data["group_name"] = group_name or "Sin categoría"
             branch_data["provider_name"] = provider_name or "Sin proveedor"
             

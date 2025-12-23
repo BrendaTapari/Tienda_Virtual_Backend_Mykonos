@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 
+import asyncio
+from utils.tasks import deactivate_expired_discounts
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -36,10 +39,33 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         # Continue anyway - the app will fail on first DB request
+        
+    # Start background cleanup task
+    async def run_periodic_cleanup():
+        while True:
+            try:
+                await deactivate_expired_discounts()
+                # Run every hour (3600 seconds)
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {e}")
+                await asyncio.sleep(60) # Retry after 1 min on error
+
+    cleanup_task = asyncio.create_task(run_periodic_cleanup())
+    logger.info("Background cleanup task started")
     
     yield
     
-    # Shutdown: Close database connection pool
+    # Shutdown
+    # Cancel background task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+        
     logger.info("Shutting down Mykonos API...")
     try:
         await DatabaseManager.close()
