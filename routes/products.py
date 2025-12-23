@@ -65,10 +65,11 @@ async def get_all_products_admin(
                 p.product_name,
                 p.provider_code,
                 p.sale_price,
+                p.original_price,
                 p.en_tienda_online,
                 p.group_id,
                 p.description,
-                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
+                COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage,
                 e.entity_name as provider_name,
                 g.group_name,
                 (SELECT image_url FROM images WHERE product_id = p.id ORDER BY id ASC LIMIT 1) as image_url
@@ -147,7 +148,7 @@ async def get_all_products_info(product_id: int):
                 p.precio_web,
                 e.entity_name as provider_name,
                 g.group_name,
-                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
+                COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage
             FROM products p
             LEFT JOIN entities e ON p.provider_id = e.id
             LEFT JOIN groups g ON p.group_id = g.id
@@ -925,7 +926,7 @@ async def get_all_productos(
                         ARRAY[]::TEXT[]
                     ) as images,
                     COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible,
-                    COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
+                    COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage,
                     e.entity_name as provider
                 FROM products p
                 LEFT JOIN groups g ON p.group_id = g.id
@@ -959,7 +960,7 @@ async def get_all_productos(
                         ARRAY[]::TEXT[]
                     ) as images,
                     COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
-                    COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
+                    COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage,
                     e.entity_name as provider
                 FROM products p
                 LEFT JOIN groups g ON p.group_id = g.id

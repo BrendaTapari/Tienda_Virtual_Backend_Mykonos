@@ -142,6 +142,7 @@ class OnlineStoreProduct(BaseModel):
     stock_disponible: int  # Suma total del stock
     variantes: List[OnlineStoreProductVariant] # Lista de variantes
     discount_percentage: Optional[float] = 0
+    provider: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -194,6 +195,8 @@ class ProductAllResponse(BaseModel):
     provider_name: Optional[str] = None
     group_name: Optional[str] = None
     image_url: Optional[str] = None
+    discount_percentage: Optional[float] = 0
+    original_price: Optional[float] = 0
     
     class Config:
         from_attributes = True
