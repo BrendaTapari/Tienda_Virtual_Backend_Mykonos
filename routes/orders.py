@@ -62,15 +62,34 @@ async def checkout(checkout_data: CheckoutRequest, authorization: Optional[str] 
                 p.precio_web as unit_price,
                 p.cost as cost_price,
                 p.en_tienda_online,
-                wsv.quantity as stock_available,
-                s.size_name,
-                c.color_name,
-                (wci.quantity * p.precio_web) as subtotal
+                COALESCE(s_web.size_name, s_warehouse.size_name) as size_name,
+                COALESCE(c_web.color_name, c_warehouse.color_name) as color_name,
+                (wci.quantity * p.precio_web) as subtotal,
+                COALESCE(
+                    -- First try: variant_id is from web_variants
+                    (SELECT SUM(wvba.cantidad_asignada)
+                     FROM web_variant_branch_assignment wvba
+                     WHERE wvba.variant_id = wci.variant_id),
+                    -- Second try: variant_id is from warehouse_stock_variants
+                    (SELECT SUM(wvba.cantidad_asignada)
+                     FROM warehouse_stock_variants wsv
+                     JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                         AND wv.size_id = wsv.size_id 
+                         AND wv.color_id = wsv.color_id
+                     JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
+                     WHERE wsv.id = wci.variant_id),
+                    0
+                ) as stock_available
             FROM web_cart_items wci
             INNER JOIN products p ON wci.product_id = p.id
+            -- Try to join with web_variants
+            LEFT JOIN web_variants wv ON wci.variant_id = wv.id
+            LEFT JOIN sizes s_web ON wv.size_id = s_web.id
+            LEFT JOIN colors c_web ON wv.color_id = c_web.id
+            -- If not found, try warehouse_stock_variants
             LEFT JOIN warehouse_stock_variants wsv ON wci.variant_id = wsv.id
-            LEFT JOIN sizes s ON wsv.size_id = s.id
-            LEFT JOIN colors c ON wsv.color_id = c.id
+            LEFT JOIN sizes s_warehouse ON wsv.size_id = s_warehouse.id
+            LEFT JOIN colors c_warehouse ON wsv.color_id = c_warehouse.id
             WHERE wci.cart_id = $1
             """,
             cart['id']
@@ -162,16 +181,58 @@ async def checkout(checkout_data: CheckoutRequest, authorization: Optional[str] 
                 item['subtotal']
             )
             
-            # Update stock
-            await db.execute(
+            # Update web stock - decrement from web_variant_branch_assignment
+            # First, check if variant_id is from web_variants or warehouse_stock_variants
+            web_variant_id = await db.fetch_val(
                 """
-                UPDATE warehouse_stock_variants
-                SET quantity = quantity - $1
-                WHERE id = $2
+                SELECT COALESCE(
+                    -- If it's already a web_variant, use it
+                    (SELECT id FROM web_variants WHERE id = $1),
+                    -- Otherwise, find the matching web_variant from warehouse_stock_variant
+                    (SELECT wv.id 
+                     FROM warehouse_stock_variants wsv
+                     JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                         AND wv.size_id = wsv.size_id 
+                         AND wv.color_id = wsv.color_id
+                     WHERE wsv.id = $1
+                     LIMIT 1)
+                )
                 """,
-                item['quantity'],
                 item['variant_id']
             )
+            
+            if web_variant_id:
+                # Decrement web stock proportionally from all branches
+                # Get all branch assignments for this variant
+                branch_assignments = await db.fetch_all(
+                    """
+                    SELECT id, branch_id, cantidad_asignada
+                    FROM web_variant_branch_assignment
+                    WHERE variant_id = $1 AND cantidad_asignada > 0
+                    ORDER BY cantidad_asignada DESC
+                    """,
+                    web_variant_id
+                )
+                
+                remaining_to_deduct = item['quantity']
+                for assignment in branch_assignments:
+                    if remaining_to_deduct <= 0:
+                        break
+                    
+                    deduct_amount = min(assignment['cantidad_asignada'], remaining_to_deduct)
+                    
+                    await db.execute(
+                        """
+                        UPDATE web_variant_branch_assignment
+                        SET cantidad_asignada = cantidad_asignada - $1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $2
+                        """,
+                        deduct_amount,
+                        assignment['id']
+                    )
+                    
+                    remaining_to_deduct -= deduct_amount
         
         # Clear cart
         await db.execute(

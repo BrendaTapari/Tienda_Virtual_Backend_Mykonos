@@ -44,7 +44,7 @@ async def send_verification_email(email: str, username: str, verification_token:
     <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">
+                <h1 style="color: #2c3e50; border-bottom: 3px solid #FF6B35; padding-bottom: 10px;">
                     ¡Bienvenido a Mykonos!
                 </h1>
                 
@@ -55,7 +55,7 @@ async def send_verification_email(email: str, username: str, verification_token:
                 
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{verification_link}" 
-                       style="background-color: #3498db; color: white; padding: 12px 30px; 
+                       style="background-color: #FF6B35; color: white; padding: 12px 30px; 
                               text-decoration: none; border-radius: 5px; display: inline-block;">
                         Verificar mi correo
                     </a>
@@ -101,7 +101,7 @@ async def send_welcome_email(email: str, username: str):
     <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">
+                <h1 style="color: #2c3e50; border-bottom: 3px solid #FF6B35; padding-bottom: 10px;">
                     ¡Bienvenido a Mykonos!
                 </h1>
                 
@@ -111,7 +111,7 @@ async def send_welcome_email(email: str, username: str):
                 
                 <p>Si tienes alguna pregunta o necesitas ayuda, no dudes en contactarnos.</p>
                 
-                <p>Visita nuestra tienda virtual en <a href="{FRONTEND_URL}">{FRONTEND_URL}</a></p>
+                <p>Visita nuestra tienda virtual en <a href="{FRONTEND_URL}" style="color: #FF6B35; text-decoration: none;">{FRONTEND_URL}</a></p>
                 
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
                 
@@ -147,7 +147,7 @@ async def send_contact_email(name: str, email: str, phone: str, message_text: st
     <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">
+                <h1 style="color: #2c3e50; border-bottom: 3px solid #FF6B35; padding-bottom: 10px;">
                     Nueva Consulta desde la Web
                 </h1>
                 
@@ -158,16 +158,13 @@ async def send_contact_email(name: str, email: str, phone: str, message_text: st
                     <p><strong>Teléfono:</strong> {phone if phone else 'No proporcionado'}</p>
                 </div>
                 
-                <div style="background-color: #fff; padding: 20px; border-left: 4px solid #3498db; margin: 20px 0;">
+                <div style="background-color: #fff; padding: 20px; border-left: 4px solid #FF6B35; margin: 20px 0;">
                     <h3 style="margin-top: 0; color: #2c3e50;">Mensaje:</h3>
                     <p style="white-space: pre-wrap;">{message_text}</p>
                 </div>
                 
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
                 
-                <p style="color: #7f8c8d; font-size: 12px;">
-                    Puedes responder directamente a este correo para contactar al cliente.
-                </p>
                 
                 <p style="color: #7f8c8d; font-size: 12px; text-align: center;">
                     Sistema de contacto - Mykonos

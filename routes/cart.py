@@ -61,17 +61,37 @@ async def get_cart(authorization: Optional[str] = Header(None)):
                 p.nombre_web as product_name,
                 i.image_url as product_image,
                 wci.variant_id,
-                s.size_name,
-                c.color_name,
+                COALESCE(s_web.size_name, s_warehouse.size_name) as size_name,
+                COALESCE(c_web.color_name, c_warehouse.color_name) as color_name,
+                COALESCE(c_web.color_hex, c_warehouse.color_hex) as color_hex,
                 wci.quantity,
                 p.precio_web as unit_price,
                 (wci.quantity * p.precio_web) as subtotal,
-                COALESCE(wsv.quantity, 0) as stock_available
+                COALESCE((
+                    -- First try: variant_id is from web_variants
+                    SELECT SUM(wvba.cantidad_asignada)
+                    FROM web_variant_branch_assignment wvba
+                    WHERE wvba.variant_id = wci.variant_id
+                ), (
+                    -- Second try: variant_id is from warehouse_stock_variants, find matching web_variant
+                    SELECT SUM(wvba.cantidad_asignada)
+                    FROM warehouse_stock_variants wsv
+                    JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                        AND wv.size_id = wsv.size_id 
+                        AND wv.color_id = wsv.color_id
+                    JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
+                    WHERE wsv.id = wci.variant_id
+                ), 0) as stock_available
             FROM web_cart_items wci
             INNER JOIN products p ON wci.product_id = p.id
+            -- Try to join with web_variants
+            LEFT JOIN web_variants wv ON wci.variant_id = wv.id
+            LEFT JOIN sizes s_web ON wv.size_id = s_web.id
+            LEFT JOIN colors c_web ON wv.color_id = c_web.id
+            -- If not found, try warehouse_stock_variants
             LEFT JOIN warehouse_stock_variants wsv ON wci.variant_id = wsv.id
-            LEFT JOIN sizes s ON wsv.size_id = s.id
-            LEFT JOIN colors c ON wsv.color_id = c.id
+            LEFT JOIN sizes s_warehouse ON wsv.size_id = s_warehouse.id
+            LEFT JOIN colors c_warehouse ON wsv.color_id = c_warehouse.id
             LEFT JOIN LATERAL (
                 SELECT image_url FROM images WHERE product_id = p.id LIMIT 1
             ) i ON TRUE
@@ -133,6 +153,7 @@ async def add_to_cart(item_data: AddToCartRequest, authorization: Optional[str] 
         )
         
         if not product:
+            logger.warning(f"Add to cart failed: Product {item_data.product_id} not found")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Producto no encontrado"
@@ -144,18 +165,39 @@ async def add_to_cart(item_data: AddToCartRequest, authorization: Optional[str] 
                 detail="Este producto no está disponible en la tienda online"
             )
         
-        # Validate variant exists and has stock
+        # Validate variant exists and has web stock assigned
+        # Try to get web stock - handles both web_variants and warehouse_stock_variants IDs
         variant = await db.fetch_one(
             """
-            SELECT id, quantity as stock_available
-            FROM warehouse_stock_variants
-            WHERE id = $1 AND product_id = $2
+            SELECT 
+                COALESCE(
+                    -- First try: variant_id is from web_variants
+                    (SELECT SUM(wvba.cantidad_asignada)
+                     FROM web_variant_branch_assignment wvba
+                     WHERE wvba.variant_id = $1),
+                    -- Second try: variant_id is from warehouse_stock_variants
+                    (SELECT SUM(wvba.cantidad_asignada)
+                     FROM warehouse_stock_variants wsv
+                     JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                         AND wv.size_id = wsv.size_id 
+                         AND wv.color_id = wsv.color_id
+                     JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
+                     WHERE wsv.id = $1),
+                    0
+                ) as stock_available,
+                -- Check if variant exists in either table
+                CASE 
+                    WHEN EXISTS (SELECT 1 FROM web_variants WHERE id = $1 AND product_id = $2) THEN true
+                    WHEN EXISTS (SELECT 1 FROM warehouse_stock_variants WHERE id = $1 AND product_id = $2) THEN true
+                    ELSE false
+                END as variant_exists
             """,
             item_data.variant_id,
             item_data.product_id
         )
         
-        if not variant:
+        if not variant or not variant['variant_exists']:
+            logger.warning(f"Add to cart failed: Variant {item_data.variant_id} for product {item_data.product_id} not found")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Variante de producto no encontrada"
@@ -288,9 +330,25 @@ async def update_cart_item(
                 detail="Item no encontrado en tu carrito"
             )
         
-        # Check stock
+        # Check web stock - handles both web_variants and warehouse_stock_variants IDs
         variant = await db.fetch_one(
-            "SELECT quantity as stock_available FROM warehouse_stock_variants WHERE id = $1",
+            """
+            SELECT COALESCE(
+                -- First try: variant_id is from web_variants
+                (SELECT SUM(wvba.cantidad_asignada)
+                 FROM web_variant_branch_assignment wvba
+                 WHERE wvba.variant_id = $1),
+                -- Second try: variant_id is from warehouse_stock_variants
+                (SELECT SUM(wvba.cantidad_asignada)
+                 FROM warehouse_stock_variants wsv
+                 JOIN web_variants wv ON wv.product_id = wsv.product_id 
+                     AND wv.size_id = wsv.size_id 
+                     AND wv.color_id = wsv.color_id
+                 JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
+                 WHERE wsv.id = $1),
+                0
+            ) as stock_available
+            """,
             item['variant_id']
         )
         

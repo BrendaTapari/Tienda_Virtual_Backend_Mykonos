@@ -102,6 +102,8 @@ app.add_middleware(
 app.include_router(products.router, prefix="/products", tags=["Productos"])
 app.include_router(groups.router, prefix="/groups", tags=["Grupos"])
 app.include_router(user.router, prefix="/auth", tags=["Autenticación"])
+# Also include user router with /users prefix for compatibility
+app.include_router(user.router, prefix="/users", tags=["Usuarios"])
 app.include_router(purchases.router, prefix="/purchases", tags=["Compras"])
 app.include_router(contact.router, prefix="/contact", tags=["Contacto"])
 
