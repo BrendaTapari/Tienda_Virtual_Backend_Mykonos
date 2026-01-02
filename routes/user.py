@@ -533,3 +533,206 @@ async def change_password(
 #     See GOOGLE_OAUTH_SETUP.md for configuration instructions.
 #     """
 #     pass
+
+
+@router.get("/{user_id}/activity")
+async def get_user_activity(user_id: int):
+    """
+    Get complete user activity information (admin only).
+    
+    Returns comprehensive user data including:
+    - User profile information
+    - Purchase history with full tracking history
+    - Payment methods used
+    - All products ordered with details
+    
+    Path Parameters:
+    - user_id: The ID of the user to retrieve activity for
+    
+    Requires: Admin authentication (TODO: add authentication)
+    """
+    pool = await DatabaseManager.get_pool()
+    
+    async with pool.acquire() as conn:
+        # Get user profile
+        user = await conn.fetchrow(
+            """
+            SELECT id, username, fullname, email, phone, domicilio, cuit, 
+                   role, status, profile_image_url, email_verified, created_at
+            FROM web_users
+            WHERE id = $1
+            """,
+            user_id
+        )
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with ID {user_id} not found"
+            )
+        
+        # Get purchase history
+        purchases = await conn.fetch(
+            """
+            SELECT 
+                s.id as sale_id,
+                s.sale_date as purchase_date,
+                s.total,
+                s.origin,
+                s.shipping_address,
+                s.delivery_type,
+                s.notes
+            FROM sales s
+            WHERE s.web_user_id = $1
+            ORDER BY s.sale_date DESC
+            """,
+            user_id
+        )
+        
+        # Get all products ordered
+        products_ordered = await conn.fetch(
+            """
+            SELECT 
+                sd.sale_id,
+                sd.product_id,
+                sd.product_name,
+                sd.variant_id,
+                sd.size_name as size,
+                sd.color_name as color,
+                sd.quantity,
+                sd.sale_price as unit_price,
+                sd.subtotal,
+                sd.discount_amount as discount_applied,
+                s.sale_date as order_date
+            FROM sales_detail sd
+            JOIN sales s ON s.id = sd.sale_id
+            WHERE s.web_user_id = $1
+            ORDER BY s.sale_date DESC, sd.id
+            """,
+            user_id
+        )
+        
+        # Format response
+        user_data = dict(user)
+        
+        # Format purchases with tracking history and payment info
+        purchases_list = []
+        for purchase in purchases:
+            sale_id = purchase['sale_id']
+            
+            # Get full tracking history for this purchase
+            tracking_history = await conn.fetch(
+                """
+                SELECT 
+                    status,
+                    description,
+                    location,
+                    created_at
+                FROM sales_tracking_history
+                WHERE sale_id = $1
+                ORDER BY created_at ASC
+                """,
+                sale_id
+            )
+            
+            # Get payment information
+            payment_info = await conn.fetch(
+                """
+                SELECT 
+                    sp.id as payment_id,
+                    pm.method_name,
+                    pm.display_name,
+                    b.name as bank_name,
+                    sp.created_at as payment_date
+                FROM sales_payments sp
+                JOIN banks_payment_methods bpm ON bpm.id = sp.payment_method_id
+                JOIN payment_methods pm ON pm.id = bpm.payment_method_id
+                LEFT JOIN banks b ON b.id = bpm.bank_id
+                WHERE sp.sale_id = $1
+                """,
+                sale_id
+            )
+            
+            # Format tracking history
+            tracking_list = []
+            for track in tracking_history:
+                tracking_list.append({
+                    "status": track['status'],
+                    "description": track['description'],
+                    "location": track['location'],
+                    "timestamp": track['created_at'].isoformat() if track['created_at'] else None
+                })
+            
+            # Format payment info
+            payment_list = []
+            for payment in payment_info:
+                payment_list.append({
+                    "payment_id": payment['payment_id'],
+                    "method_name": payment['method_name'],
+                    "display_name": payment['display_name'],
+                    "bank_name": payment['bank_name'],
+                    "payment_date": payment['payment_date'].isoformat() if payment['payment_date'] else None
+                })
+            
+            # Get current status (last tracking entry)
+            current_status = tracking_list[-1] if tracking_list else None
+            
+            purchases_list.append({
+                "sale_id": sale_id,
+                "purchase_date": purchase['purchase_date'].isoformat() if purchase['purchase_date'] else None,
+                "total": float(purchase['total']) if purchase['total'] else 0,
+                "origin": purchase['origin'],
+                "shipping_address": purchase['shipping_address'],
+                "delivery_type": purchase['delivery_type'],
+                "notes": purchase['notes'],
+                "current_status": current_status['status'] if current_status else None,
+                "current_status_description": current_status['description'] if current_status else None,
+                "current_status_updated_at": current_status['timestamp'] if current_status else None,
+                "tracking_history": tracking_list,
+                "payment_methods": payment_list
+            })
+        
+        # Format products
+        products_list = []
+        for product in products_ordered:
+            products_list.append({
+                "sale_id": product['sale_id'],
+                "product_id": product['product_id'],
+                "product_name": product['product_name'],
+                "variant_id": product['variant_id'],
+                "size": product['size'],
+                "color": product['color'],
+                "quantity": product['quantity'],
+                "unit_price": float(product['unit_price']) if product['unit_price'] else 0,
+                "subtotal": float(product['subtotal']) if product['subtotal'] else 0,
+                "discount_applied": float(product['discount_applied']) if product['discount_applied'] else 0,
+                "order_date": product['order_date'].isoformat() if product['order_date'] else None
+            })
+        
+        # Calculate statistics
+        total_purchases = len(purchases_list)
+        total_spent = sum(p['total'] for p in purchases_list)
+        total_products = sum(p['quantity'] for p in products_list)
+        
+        return {
+            "user": {
+                "id": user_data['id'],
+                "username": user_data['username'],
+                "fullname": user_data['fullname'],
+                "email": user_data['email'],
+                "phone": user_data['phone'],
+                "domicilio": user_data['domicilio'],
+                "cuit": user_data['cuit'],
+                "role": user_data['role'],
+                "status": user_data['status'],
+                "email_verified": user_data['email_verified'],
+                "created_at": user_data['created_at'].isoformat() if user_data['created_at'] else None
+            },
+            "statistics": {
+                "total_purchases": total_purchases,
+                "total_spent": total_spent,
+                "total_products_ordered": total_products
+            },
+            "purchases": purchases_list,
+            "products_ordered": products_list
+        }
