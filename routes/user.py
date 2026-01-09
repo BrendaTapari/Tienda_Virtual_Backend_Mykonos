@@ -11,14 +11,9 @@ import uuid
 from datetime import datetime
 
 from models.user_models import (
-    UserRegister,
-    UserLogin,
-    UserResponse,
-    TokenResponse,
-    UserUpdate,
-    PasswordChange,
-    EmailVerification,
-    ResendVerification
+    UserRegister, UserLogin, UserResponse, TokenResponse,
+    UserUpdate, PasswordChange, EmailVerification, ResendVerification,
+    GoogleAuthCallback, GoogleUserInfo
 )
 from config.db_connection import DatabaseManager
 from utils.email import send_verification_email
@@ -518,21 +513,275 @@ async def change_password(
     return {"message": "Password changed successfully"}
 
 
-# TODO: Google OAuth endpoint - Implement when Google OAuth is configured
-# @router.post("/auth/google")
-# async def google_auth(google_token: str):
-#     """
-#     Authenticate with Google OAuth.
-#     
-#     This endpoint will:
-#     1. Verify the Google token
-#     2. Extract user information (email, name, google_id)
-#     3. Create user if doesn't exist or login if exists
-#     4. Return session token
-#     
-#     See GOOGLE_OAUTH_SETUP.md for configuration instructions.
-#     """
-#     pass
+@router.get("/google/login")
+async def google_login():
+    """
+    Initiate Google OAuth flow.
+    
+    Returns the Google OAuth URL that the frontend should redirect the user to.
+    After authentication, Google will redirect to /auth/google/callback.
+    """
+    from utils.google_oauth import get_google_oauth_url
+    import os
+    
+    # Get the redirect URI from environment or use default
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+    
+    try:
+        oauth_url = get_google_oauth_url(redirect_uri)
+        return {
+            "oauth_url": oauth_url,
+            "message": "Redirect user to this URL to authenticate with Google"
+        }
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/google/callback")
+async def google_callback(code: str, state: Optional[str] = None):
+    """
+    Handle Google OAuth callback.
+    
+    This endpoint receives the authorization code from Google after user authentication.
+    It exchanges the code for tokens, verifies the ID token using google-auth library,
+    and either creates a new user or logs in an existing user.
+    
+    Query Parameters:
+    - code: Authorization code from Google (required)
+    - state: State parameter for CSRF protection (optional)
+    
+    Returns:
+    - Redirects to frontend with session token as URL parameter
+    """
+    from utils.google_oauth import exchange_code_for_token, verify_google_token
+    import os
+    
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    
+    try:
+        # Exchange authorization code for tokens (access_token and id_token)
+        token_data = await exchange_code_for_token(code, redirect_uri)
+        id_token_str = token_data.get("id_token")
+        
+        if not id_token_str:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to obtain ID token from Google"
+            )
+        
+        # Verify ID token using google-auth library (more secure)
+        google_user = await verify_google_token(id_token_str)
+        google_id = google_user.get("id")
+        email = google_user.get("email")
+        name = google_user.get("name", "")
+        picture = google_user.get("picture")
+        
+        if not google_id or not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to obtain user information from Google"
+            )
+        
+        pool = await DatabaseManager.get_pool()
+        
+        async with pool.acquire() as conn:
+            # Check if user exists by google_id
+            user = await conn.fetchrow(
+                """
+                SELECT id, username, fullname, email, phone, domicilio, cuit, 
+                       role, status, profile_image_url, email_verified, created_at
+                FROM web_users
+                WHERE google_id = $1
+                """,
+                google_id
+            )
+            
+            # If not found by google_id, check by email
+            if not user:
+                user = await conn.fetchrow(
+                    """
+                    SELECT id, username, fullname, email, phone, domicilio, cuit, 
+                           role, status, profile_image_url, email_verified, created_at, google_id
+                    FROM web_users
+                    WHERE email = $1
+                    """,
+                    email
+                )
+                
+                # If user exists with this email but no google_id, link the account
+                if user and not user['google_id']:
+                    await conn.execute(
+                        "UPDATE web_users SET google_id = $1, profile_image_url = $2 WHERE id = $3",
+                        google_id,
+                        picture or user['profile_image_url'],
+                        user['id']
+                    )
+            
+            # If user still doesn't exist, create new user
+            if not user:
+                # Generate username from email or name
+                username = email.split('@')[0]
+                
+                # Ensure username is unique
+                base_username = username
+                counter = 1
+                while await conn.fetchrow("SELECT id FROM web_users WHERE username = $1", username):
+                    username = f"{base_username}{counter}"
+                    counter += 1
+                
+                # Create new user
+                session_token = generate_session_token()
+                
+                user = await conn.fetchrow(
+                    """
+                    INSERT INTO web_users 
+                    (username, fullname, email, google_id, role, status, session_token, 
+                     email_verified, profile_image_url)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id, username, fullname, email, phone, domicilio, cuit, 
+                              role, status, profile_image_url, email_verified, created_at
+                    """,
+                    username,
+                    name,
+                    email,
+                    google_id,
+                    "customer",  # Default role
+                    "active",    # Default status
+                    session_token,
+                    True,        # Email verified by Google
+                    picture
+                )
+            else:
+                # User exists, generate new session token
+                session_token = generate_session_token()
+                
+                await conn.execute(
+                    "UPDATE web_users SET session_token = $1 WHERE id = $2",
+                    session_token,
+                    user['id']
+                )
+        
+        # Redirect to frontend with session token
+        from fastapi.responses import RedirectResponse
+        redirect_url = f"{frontend_url}/auth/callback?token={session_token}"
+        return RedirectResponse(url=redirect_url)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log the error and redirect to frontend with error
+        print(f"Google OAuth error: {e}")
+        from fastapi.responses import RedirectResponse
+        redirect_url = f"{frontend_url}/auth/callback?error=authentication_failed"
+        return RedirectResponse(url=redirect_url)
+
+
+@router.put("/{user_id}", response_model=UserResponse)
+async def update_user_by_admin(user_id: int, user_update: UserUpdate):
+    """
+    Update user information by admin (admin only).
+    
+    Allows administrators to update any user's personal information including:
+    - Full name
+    - Email (with uniqueness validation)
+    - Phone number
+    - Address (domicilio)
+    - Profile image URL
+    
+    Path Parameters:
+    - user_id: The ID of the user to update
+    
+    Body Parameters (all optional):
+    - fullname: User's full name
+    - email: Email address (must be unique)
+    - phone: Phone number
+    - domicilio: Address
+    - profile_image_url: URL to profile image
+    
+    Requires: Admin authentication (TODO: add authentication)
+    """
+    pool = await DatabaseManager.get_pool()
+    
+    async with pool.acquire() as conn:
+        # Check if user exists
+        user = await conn.fetchrow(
+            "SELECT id FROM web_users WHERE id = $1",
+            user_id
+        )
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with ID {user_id} not found"
+            )
+        
+        # Build update query dynamically based on provided fields
+        update_fields = []
+        values = []
+        param_count = 1
+        
+        if user_update.fullname is not None:
+            update_fields.append(f"fullname = ${param_count}")
+            values.append(user_update.fullname)
+            param_count += 1
+        
+        if user_update.email is not None:
+            # Check if email is already used by another user
+            existing = await conn.fetchrow(
+                "SELECT id FROM web_users WHERE email = $1 AND id != $2",
+                user_update.email,
+                user_id
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already in use by another user"
+                )
+            
+            update_fields.append(f"email = ${param_count}")
+            values.append(user_update.email)
+            param_count += 1
+        
+        if user_update.phone is not None:
+            update_fields.append(f"phone = ${param_count}")
+            values.append(user_update.phone)
+            param_count += 1
+        
+        if user_update.domicilio is not None:
+            update_fields.append(f"domicilio = ${param_count}")
+            values.append(user_update.domicilio)
+            param_count += 1
+        
+        if user_update.profile_image_url is not None:
+            update_fields.append(f"profile_image_url = ${param_count}")
+            values.append(user_update.profile_image_url)
+            param_count += 1
+        
+        if not update_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields to update"
+            )
+        
+        # Add user_id as last parameter
+        values.append(user_id)
+        
+        # Execute update
+        query = f"""
+            UPDATE web_users
+            SET {', '.join(update_fields)}
+            WHERE id = ${param_count}
+            RETURNING id, username, fullname, email, phone, domicilio, cuit, 
+                      role, status, profile_image_url, email_verified, created_at
+        """
+        
+        updated_user = await conn.fetchrow(query, *values)
+        
+        return UserResponse(**dict(updated_user))
 
 
 @router.get("/{user_id}/activity")

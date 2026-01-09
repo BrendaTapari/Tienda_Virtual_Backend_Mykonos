@@ -30,6 +30,7 @@ from utils.auth import require_admin
 import base64
 from models.imageUpload import ImageUpload
 from models.imageResponse import ImageResponse
+from models.imageReorder import ReorderImagesRequest
 from datetime import datetime
 import os
 from sqlalchemy.orm import Session
@@ -76,7 +77,7 @@ async def get_all_products_admin(
                 COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage,
                 e.entity_name as provider_name,
                 g.group_name,
-                (SELECT image_url FROM images WHERE product_id = p.id ORDER BY id ASC LIMIT 1) as image_url
+                (SELECT image_url FROM images WHERE product_id = p.id ORDER BY orden ASC LIMIT 1) as image_url
             FROM products p
             LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
                 AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
@@ -193,7 +194,7 @@ async def get_all_products_info(product_id: int):
         
         # 3. Images Query
         query_images = """
-            SELECT image_url FROM images WHERE product_id = $1 ORDER BY id ASC
+            SELECT image_url FROM images WHERE product_id = $1 ORDER BY orden ASC
         """
         images_result = await db.fetch_all(query_images, product_id)
         images = [img['image_url'] for img in images_result]
@@ -559,8 +560,9 @@ async def add_product_image(
     - **product_id**: ID del producto
     - **image_data**: Imagen codificada en base64
     - **filename**: Nombre original del archivo
+    - **orden**: Orden de visualización (opcional, se auto-asigna si no se especifica)
     
-    Returns: Objeto con id e image_url
+    Returns: Objeto con id, image_url y orden
     """
     try:
         # Verificar que el producto existe
@@ -572,6 +574,17 @@ async def add_product_image(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Producto {product_id} no encontrado"
             )
+        
+        # Determinar el orden de la imagen
+        if image.orden is None:
+            # Auto-asignar el siguiente orden disponible
+            max_orden_result = await db.fetch_one(
+                "SELECT COALESCE(MAX(orden), -1) as max_orden FROM images WHERE product_id = $1",
+                product_id
+            )
+            orden = max_orden_result['max_orden'] + 1
+        else:
+            orden = image.orden
         
         # Decodificar base64
         try:
@@ -612,17 +625,16 @@ async def add_product_image(
         # URL para el frontend
         image_url = f"{IMAGES_BASE_URL}/{unique_filename}"
         
-        # Insertar en la base de datos
-        # Insertar en la base de datos
+        # Insertar en la base de datos con el orden
         # Nota: image_data es BLOB NOT NULL en la base de datos legacy, insertamos bytes vacíos
         # ya que ahora guardamos el archivo en disco y usamos image_url.
         result = await db.fetch_one(
             """
-            INSERT INTO images (image_url, product_id, image_data)
-            VALUES ($1, $2, $3)
-            RETURNING id, image_url
+            INSERT INTO images (image_url, product_id, image_data, orden)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, image_url, orden
             """,
-            image_url, product_id, b''  # Empty bytes for legacy BLOB column
+            image_url, product_id, b'', orden  # Empty bytes for legacy BLOB column
         )
         
         return result
@@ -702,19 +714,19 @@ async def delete_product_image(
 @router.get("/{product_id}/images", response_model=list[ImageResponse])
 async def get_product_images(product_id: int):
     """
-    Obtiene todas las imágenes de un producto.
+    Obtiene todas las imágenes de un producto ordenadas por su orden de visualización.
     
     - **product_id**: ID del producto
     
-    Returns: Lista de objetos con id e image_url
+    Returns: Lista de objetos con id, image_url y orden
     """
     try:
         images = await db.fetch_all(
             """
-            SELECT id, image_url 
+            SELECT id, image_url, orden
             FROM images 
             WHERE product_id = $1 
-            ORDER BY id DESC
+            ORDER BY orden ASC
             """,
             product_id
         )
@@ -724,6 +736,94 @@ async def get_product_images(product_id: int):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener imágenes: {str(e)}"
+        )
+
+
+### Endpoint: PATCH /products/{product_id}/images/reorder
+@router.patch("/{product_id}/images/reorder")
+async def reorder_product_images(
+    product_id: int,
+    reorder_data: ReorderImagesRequest,
+    current_user: dict = Depends(require_admin)
+):
+    """
+    Reordena las imágenes de un producto.
+    
+    - **product_id**: ID del producto
+    - **images**: Lista de objetos con image_id y nuevo orden
+    
+    Ejemplo de request body:
+    ```json
+    {
+        "images": [
+            {"image_id": 5, "orden": 0},
+            {"image_id": 3, "orden": 1},
+            {"image_id": 7, "orden": 2}
+        ]
+    }
+    ```
+    
+    Returns: Mensaje de confirmación
+    """
+    try:
+        # Verificar que el producto existe
+        product = await db.fetch_one(
+            "SELECT id FROM products WHERE id = $1", product_id
+        )
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Producto {product_id} no encontrado"
+            )
+        
+        # Validar que todas las imágenes pertenecen al producto
+        image_ids = [img.image_id for img in reorder_data.images]
+        
+        if image_ids:
+            existing_images = await db.fetch_all(
+                f"""
+                SELECT id FROM images 
+                WHERE id = ANY($1) AND product_id = $2
+                """,
+                image_ids,
+                product_id
+            )
+            
+            existing_ids = {img['id'] for img in existing_images}
+            requested_ids = set(image_ids)
+            
+            if existing_ids != requested_ids:
+                missing_ids = requested_ids - existing_ids
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Imágenes no encontradas o no pertenecen al producto: {missing_ids}"
+                )
+        
+        # Actualizar el orden de cada imagen
+        for img in reorder_data.images:
+            await db.execute(
+                """
+                UPDATE images 
+                SET orden = $1 
+                WHERE id = $2 AND product_id = $3
+                """,
+                img.orden,
+                img.image_id,
+                product_id
+            )
+        
+        return {
+            "message": "Orden de imágenes actualizado correctamente",
+            "updated_count": len(reorder_data.images)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al reordenar imágenes: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al reordenar imágenes: {str(e)}"
         )
 
 
@@ -973,7 +1073,7 @@ async def get_all_productos(
             # --- MODO GLOBAL (WEB) ---
             query_products = """
                 WITH product_images AS (
-                    SELECT product_id, ARRAY_AGG(image_url ORDER BY id ASC) as images
+                    SELECT product_id, ARRAY_AGG(image_url ORDER BY orden ASC) as images
                     FROM images
                     GROUP BY product_id
                 ),
@@ -1037,7 +1137,7 @@ async def get_all_productos(
 
             query_products = """
                 WITH product_images AS (
-                    SELECT product_id, ARRAY_AGG(image_url ORDER BY id ASC) as images
+                    SELECT product_id, ARRAY_AGG(image_url ORDER BY orden ASC) as images
                     FROM images
                     GROUP BY product_id
                 ),
@@ -1172,7 +1272,7 @@ async def get_productos_by_group(groupName: str):
                 p.slug,
                 COALESCE(g.group_name, 'Sin categoría') as category,
                 COALESCE(
-                    ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                    (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
                     ARRAY[]::TEXT[]
                 ) as images,
                 COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
@@ -1258,7 +1358,7 @@ async def get_product(
                     p.slug,
                     COALESCE(g.group_name, 'Sin categoría') as category,
                     COALESCE(
-                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
                         '{}'
                     ) as images,
                     COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible,
@@ -1285,7 +1385,7 @@ async def get_product(
                     p.slug,
                     COALESCE(g.group_name, 'Sin categoría') as category,
                     COALESCE(
-                        ARRAY_AGG(DISTINCT i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                        (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
                         '{}'
                     ) as images,
                     COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
@@ -1570,7 +1670,7 @@ async def get_online_store_products(
                 p.slug,
                 COALESCE(g.group_name, 'Sin categoría') as category,
                 COALESCE(
-                    ARRAY_AGG(i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
+                    (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
                     ARRAY[]::TEXT[]
                 ) as images,
                 COALESCE(SUM(wsv.quantity), 0) as stock_disponible

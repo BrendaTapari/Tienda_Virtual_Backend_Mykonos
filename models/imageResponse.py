@@ -6,3 +6,4 @@ class ImageResponse(BaseModel):
     """Respuesta con datos de imagen"""
     id: int
     image_url: str
+    orden: int  # Orden de visualización

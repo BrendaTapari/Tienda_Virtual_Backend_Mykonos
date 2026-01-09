@@ -93,7 +93,7 @@ async def get_cart(authorization: Optional[str] = Header(None)):
             LEFT JOIN sizes s_warehouse ON wsv.size_id = s_warehouse.id
             LEFT JOIN colors c_warehouse ON wsv.color_id = c_warehouse.id
             LEFT JOIN LATERAL (
-                SELECT image_url FROM images WHERE product_id = p.id LIMIT 1
+                SELECT image_url FROM images WHERE product_id = p.id ORDER BY orden ASC LIMIT 1
             ) i ON TRUE
             WHERE wci.cart_id = $1
             ORDER BY wci.created_at DESC

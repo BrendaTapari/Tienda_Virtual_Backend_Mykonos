@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 import asyncio
 from utils.tasks import deactivate_expired_discounts
+from utils.order_tasks import cancel_expired_orders
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,7 +41,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize database: {e}")
         # Continue anyway - the app will fail on first DB request
         
-    # Start background cleanup task
+    # Start background cleanup tasks
     async def run_periodic_cleanup():
         while True:
             try:
@@ -50,19 +51,34 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in cleanup task: {e}")
+                logger.error(f"Error in discount cleanup task: {e}")
+                await asyncio.sleep(60) # Retry after 1 min on error
+    
+    async def run_periodic_order_cancellation():
+        while True:
+            try:
+                await cancel_expired_orders()
+                # Run every 5 minutes (300 seconds)
+                await asyncio.sleep(300)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in order cancellation task: {e}")
                 await asyncio.sleep(60) # Retry after 1 min on error
 
     cleanup_task = asyncio.create_task(run_periodic_cleanup())
-    logger.info("Background cleanup task started")
+    order_cancel_task = asyncio.create_task(run_periodic_order_cancellation())
+    logger.info("Background cleanup and order cancellation tasks started")
     
     yield
     
     # Shutdown
-    # Cancel background task
+    # Cancel background tasks
     cleanup_task.cancel()
+    order_cancel_task.cancel()
     try:
         await cleanup_task
+        await order_cancel_task
     except asyncio.CancelledError:
         pass
         

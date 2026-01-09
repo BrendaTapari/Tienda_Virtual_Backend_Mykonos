@@ -190,3 +190,26 @@ class UpdateUserStatus(BaseModel):
                 "status": "inactive"
             }
         }
+
+
+# Google OAuth models
+class GoogleAuthCallback(BaseModel):
+    """Model for Google OAuth callback parameters."""
+    code: str = Field(..., description="Authorization code from Google")
+    state: Optional[str] = Field(None, description="State parameter for CSRF protection")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "code": "4/0AY0e-g7xxxxxxxxxxxxxxxxxxx"
+            }
+        }
+
+
+class GoogleUserInfo(BaseModel):
+    """Model for Google user information."""
+    id: str = Field(..., description="Google user ID")
+    email: str = Field(..., description="User email from Google")
+    name: Optional[str] = Field(None, description="User's full name")
+    picture: Optional[str] = Field(None, description="Profile picture URL")
+    verified_email: bool = Field(default=True, description="Whether email is verified by Google")

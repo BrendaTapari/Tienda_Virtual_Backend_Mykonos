@@ -342,6 +342,7 @@ DATABASE_TABLES = {
             "image_data": "BLOB NOT NULL",  # Datos de la imagen, almacenados como BLOB. #eliminar el not null
             "image_url": "TEXT",  # URL de la imagen.
             "product_id": "INTEGER",  # ID del producto al que corresponde la imagen.
+            "orden": "INTEGER NOT NULL DEFAULT 0",  # Orden de visualización de la imagen.
         },
         "foreign_keys": [
             {  # Relación con la tabla de productos.

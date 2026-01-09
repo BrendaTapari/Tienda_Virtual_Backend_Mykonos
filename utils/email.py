@@ -303,3 +303,89 @@ async def send_order_status_email(email: str, username: str, order_id: int, stat
     )
     
     await fastmail.send_message(message)
+
+
+async def send_new_order_notification_to_business(
+    order_id: int,
+    customer_name: str,
+    customer_email: str,
+    customer_phone: str,
+    total: float,
+    items_count: int,
+    shipping_address: str,
+    delivery_type: str,
+    order_link: str,
+    business_email: str = "mykonosboutique733@gmail.com"
+):
+    """
+    Send new order notification to business email
+    
+    Args:
+        order_id: Order ID
+        customer_name: Customer's full name
+        customer_email: Customer's email
+        customer_phone: Customer's phone
+        total: Order total amount
+        items_count: Number of items in order
+        shipping_address: Shipping address
+        delivery_type: Delivery type (envio/retiro)
+        order_link: Link to view order details
+        business_email: Business email to send notification to
+    """
+    delivery_type_text = "Envío a domicilio" if delivery_type == "envio" else "Retiro en sucursal"
+    
+    html_content = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #2c3e50; border-bottom: 3px solid #FF6B35; padding-bottom: 10px;">
+                    🛍️ Nuevo Pedido Recibido
+                </h1>
+                
+                <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #FF6B35;">
+                    <h2 style="margin-top: 0; color: #FF6B35;">Pedido #{order_id}</h2>
+                    <p style="font-size: 18px; margin: 5px 0;"><strong>Total: ${total:,.2f}</strong></p>
+                    <p style="margin: 5px 0;">Cantidad de productos: {items_count}</p>
+                </div>
+                
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0; color: #2c3e50;">Datos del Cliente:</h3>
+                    <p><strong>Nombre:</strong> {customer_name}</p>
+                    <p><strong>Email:</strong> <a href="mailto:{customer_email}" style="color: #FF6B35;">{customer_email}</a></p>
+                    <p><strong>Teléfono:</strong> {customer_phone if customer_phone else 'No proporcionado'}</p>
+                </div>
+                
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0;">
+                    <h3 style="margin-top: 0; color: #2c3e50;">Detalles de Entrega:</h3>
+                    <p><strong>Tipo:</strong> {delivery_type_text}</p>
+                    <p><strong>Dirección:</strong> {shipping_address}</p>
+                </div>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{order_link}" 
+                       style="background-color: #FF6B35; color: white; padding: 12px 30px; 
+                              text-decoration: none; border-radius: 5px; display: inline-block;">
+                        Ver Pedido Completo
+                    </a>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                
+                <p style="color: #7f8c8d; font-size: 12px; text-align: center;">
+                    Sistema de notificaciones - Mykonos Boutique
+                </p>
+            </div>
+        </body>
+    </html>
+    """
+    
+    message = MessageSchema(
+        subject=f"Nuevo Pedido #{order_id} - ${total:,.2f}",
+        recipients=[business_email],
+        body=html_content,
+        subtype=MessageType.html,
+        reply_to=[customer_email]  # Allow direct reply to customer
+    )
+    
+    await fastmail.send_message(message)
+
