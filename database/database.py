@@ -1,3 +1,5 @@
+from enum import Enum
+
 class TABLES(Enum):
     ENTITIES = "entities"
     FILE_ATTACHMENTS = "file_attachments"
@@ -39,9 +41,13 @@ class TABLES(Enum):
         "sales_payments"  # Relación muchos a muchos entre bancos y métodos de pago
     )
     PURCHASES_PAYMENTS = "purchases_payments"
+    SALES_TRACKING_HISTORY = "sales_tracking_history"
     WEB_VARIANTS = "web_variants"
     DISCOUNTS = "discounts"
     WEB_VARIANT_BRANCH_ASSIGNMENT = "web_variant_branch_assignment"
+    NOTIFICATIONS = "notifications"
+    BROADCAST_NOTIFICATIONS = "broadcast_notifications"
+    USER_BROADCASTS = "user_broadcasts"
 
 
 DATABASE_TABLES = {
@@ -197,7 +203,7 @@ DATABASE_TABLES = {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único para cada carrito, se incrementa automáticamente.
             "user_id": "INTEGER NOT NULL",  # ID del usuario al que pertenece el carrito.
             "created_at": "TEXT DEFAULT (datetime('now','localtime'))",  # Fecha de creación del carrito, se establece por defecto a la fecha y hora actuales.
-        }
+        },
         "foreign_keys": [
             {  # Relación con tabla de usuarios
                 "column": "user_id",
@@ -215,7 +221,7 @@ DATABASE_TABLES = {
             "variant_id": "INTEGER NOT NULL",  # ID de la variante del producto que se agrega al carrito.
             "quantity": "INTEGER NOT NULL",  # Cantidad del producto en el carrito.
             "created_at": "TEXT DEFAULT (datetime('now','localtime'))",  # Fecha de creación del ítem, se establece por defecto a la fecha y hora actuales.
-        }
+        },
         "foreign_keys": [
             {  # Relación con tabla de carritos
                 "column": "cart_id",
@@ -665,7 +671,7 @@ DATABASE_TABLES = {
             "origin": "TEXT DEFAULT 'local'", # Valores: 'local', 'web'
             "shipping_address": "TEXT",       # Dirección de envío (solo si es web)
             "shipping_status": "TEXT",        # 'pendiente', 'enviado', 'entregado'
-            "external_payment_id": "TEXT"     # El ID que te da MercadoPago/Stripe
+            "external_payment_id": "TEXT",     # El ID que te da MercadoPago/Stripe
             "web_user_id": "INTEGER", # Para vincular con WEB_USERS
             "shipping_cost": "REAL DEFAULT 0", # Por si cobras envío aparte
             "delivery_type": "TEXT DEFAULT 'envio'", # Valores sugeridos: 'domicilio', 'sucursal' (retiro)
@@ -772,6 +778,66 @@ DATABASE_TABLES = {
             },
         ],
     },
+    TABLES.NOTIFICATIONS: {
+        "columns": {
+            "id": "SERIAL PRIMARY KEY",
+            "user_id": "INT NOT NULL",
+            "order_id": "INT NULL",
+            "type": "VARCHAR(50)",
+            "title": "VARCHAR(255) NOT NULL",
+            "message": "TEXT NOT NULL",
+            "image_url": "VARCHAR(512)",
+            "link_url": "VARCHAR(512)",
+            "is_read": "BOOLEAN DEFAULT FALSE",
+            "email_sent": "BOOLEAN DEFAULT FALSE",
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        },
+        "foreign_keys": [
+            {
+                "column": "user_id",
+                "reference_table": TABLES.WEB_USERS,
+                "reference_column": "id",
+                "export_column_name": "username",
+            }
+        ]
+    },
+    TABLES.BROADCAST_NOTIFICATIONS: {
+        "columns": {
+            "id": "SERIAL PRIMARY KEY",
+            "title": "VARCHAR(255) NOT NULL",
+            "message": "TEXT NOT NULL",
+            "image_url": "VARCHAR(512)",
+            "link_url": "VARCHAR(512)",
+            "target_role": "VARCHAR(50)",
+            "active": "BOOLEAN DEFAULT TRUE",
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        }
+    },
+    TABLES.USER_BROADCASTS: {
+        "columns": {
+            "user_id": "INT NOT NULL",
+            "broadcast_id": "INT NOT NULL",
+            "is_read": "BOOLEAN DEFAULT FALSE",
+            "email_sent": "BOOLEAN DEFAULT FALSE",
+            "sent_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        },
+        "primary_key": ["user_id", "broadcast_id"],
+        "foreign_keys": [
+            {
+                "column": "user_id",
+                "reference_table": TABLES.WEB_USERS,
+                "reference_column": "id",
+                "export_column_name": "username",
+            },
+            {
+                "column": "broadcast_id",
+                "reference_table": TABLES.BROADCAST_NOTIFICATIONS,
+                "reference_column": "id",
+                "export_column_name": "title",
+            }
+        ]
+    },
+
     TABLES.USERSXSTORAGE: {
         "columns": {
             "id_user": "INTEGER NOT NULL",  # Identificador del usuario.

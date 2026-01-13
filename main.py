@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 import asyncio
 from utils.tasks import deactivate_expired_discounts
 from utils.order_tasks import cancel_expired_orders
+from utils.notification_tasks import cleanup_old_notifications_task
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -66,9 +67,24 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Error in order cancellation task: {e}")
                 await asyncio.sleep(60) # Retry after 1 min on error
 
+    async def run_periodic_notification_cleanup():
+        while True:
+            try:
+                # Run cleanup on startup/every cycle
+                await cleanup_old_notifications_task()
+                # Run every week (604800 seconds)
+                await asyncio.sleep(604800)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in notification cleanup task: {e}")
+                await asyncio.sleep(3600) # Retry after 1 hour on error
+
     cleanup_task = asyncio.create_task(run_periodic_cleanup())
     order_cancel_task = asyncio.create_task(run_periodic_order_cancellation())
-    logger.info("Background cleanup and order cancellation tasks started")
+    notification_cleanup_task = asyncio.create_task(run_periodic_notification_cleanup())
+    
+    logger.info("Background cleanup, order cancellation, and notification tasks started")
     
     yield
     
@@ -76,9 +92,11 @@ async def lifespan(app: FastAPI):
     # Cancel background tasks
     cleanup_task.cancel()
     order_cancel_task.cancel()
+    notification_cleanup_task.cancel()
     try:
         await cleanup_task
         await order_cancel_task
+        await notification_cleanup_task
     except asyncio.CancelledError:
         pass
         
@@ -132,9 +150,15 @@ from routes import admin
 app.include_router(admin.router, prefix="/admin", tags=["Administración"])
 
 # Import and include cart and orders routers
-from routes import cart, orders
+# Import and include cart and orders routers
+from routes import cart, orders, notifications
 app.include_router(cart.router, prefix="/cart", tags=["Carrito"])
 app.include_router(orders.router, prefix="/orders", tags=["Órdenes"])
+app.include_router(notifications.router, prefix="/notifications", tags=["Notificaciones"])
+
+# Import and include nave payments router
+from routes import nave_payments
+app.include_router(nave_payments.router, prefix="/api/nave", tags=["Pagos Nave"])
 
 # Mount static files directory for product images
 # Using shared directory that multiple backends access
@@ -164,6 +188,18 @@ async def home():
         "version": "1.0.0",
         "status": "online"
     }
+
+# Mount static files directory for promotions
+promotions_dir = "/home/breightend/galeria_imagenes_mykonos/imagenes_promociones"
+if os.path.exists(promotions_dir):
+    app.mount(
+        "/static/promociones",
+        StaticFiles(directory=promotions_dir),
+        name="promociones"
+    )
+    logger.info(f"Mounted static promotions directory: {promotions_dir}")
+else:
+    logger.warning(f"Promotions directory not found: {promotions_dir}")
 
 
 @app.get("/health")
