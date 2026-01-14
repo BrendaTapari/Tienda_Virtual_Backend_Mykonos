@@ -156,6 +156,10 @@ app.include_router(cart.router, prefix="/cart", tags=["Carrito"])
 app.include_router(orders.router, prefix="/orders", tags=["Órdenes"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notificaciones"])
 
+# Import and include promotions router
+from routes import promotions
+app.include_router(promotions.router, prefix="/promotions", tags=["Promociones"])
+
 # Import and include nave payments router
 from routes import nave_payments
 app.include_router(nave_payments.router, prefix="/api/nave", tags=["Pagos Nave"])

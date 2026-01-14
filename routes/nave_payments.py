@@ -14,11 +14,17 @@ class Consumer(BaseModel):
     email: Optional[str] = "test@example.com"
     # Add other fields if necessary based on Nave docs, but these are common basics
 
+class Item(BaseModel):
+    name: str
+    description: Optional[str] = "Item Description"
+    quantity: int
+    unit_price: float
+
 class PaymentRequest(BaseModel):
     amount: Amount
     consumer: Optional[Consumer] = None
-    # We might want to accept cart items too, but for payment creation, amount is critical.
-    # Allowing extra fields to be passed through if needed.
+    items: Optional[list[Item]] = None
+    external_payment_id: Optional[str] = None
 
 @router.post("/create-payment")
 async def create_payment(payment_request: PaymentRequest):
@@ -29,10 +35,8 @@ async def create_payment(payment_request: PaymentRequest):
         # Convert Pydantic model to dict, excluding None values
         payment_data = payment_request.dict(exclude_none=True)
         
-        # If consumer wasn't provided, the service layer handles dummy data, 
-        # or we can ensure it here. The model defaults handle it partially, 
-        # but if consumer is None in request, payment_data['consumer'] won't exist.
-        # Let's let the service layer fall back to dummy data if 'consumer' is missing.
+        # If items are present, ensure unit_price is handled correctly by service (service expects it in structure)
+        # The service layer handles the mapping from this dict to the Nave payload.
         
         checkout_url = create_payment_preference(payment_data)
         return {"checkout_url": checkout_url}
