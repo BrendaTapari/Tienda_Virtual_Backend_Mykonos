@@ -199,17 +199,12 @@ def create_payment_preference(payment_data: dict) -> str:
             "Content-Type": "application/json"
         }
 
-        # DEBUG: Print payload and headers to debug 500 error
-        import json
-        print(f"DEBUG PAYLOAD TO {payment_url}:")
-        print(f"HEADERS: {headers}") # Check token format
-        print(json.dumps(payload, indent=2))
-
         response = requests.post(payment_url, json=payload, headers=headers)
         
-        # Print response if error occurs
+        # Print response if error occurs (keeping this for safety logs)
         if response.status_code >= 400:
-             print(f"ERROR RESPONSE ({response.status_code}): {response.text}")
+             # Basic logging for errors is good practice, but removing the verbose checks
+             print(f"ERROR Nave Payment ({response.status_code}): {response.text}")
 
         response.raise_for_status()
         
