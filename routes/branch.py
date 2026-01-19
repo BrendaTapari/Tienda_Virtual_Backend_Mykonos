@@ -64,7 +64,7 @@ async def get_products_variants_by_branch(product_id: int):
                     c.color_hex as color_hex,
                     wsv.quantity,
                     wsv.variant_barcode as barcode,
-                    wv.displayed_stock as cantidad_web,
+                    COALESCE(wvba.cantidad_asignada, 0) as cantidad_web,
                     wv.is_active as mostrar_en_web
                 FROM warehouse_stock_variants wsv
                 JOIN storage s ON wsv.branch_id = s.id
@@ -74,6 +74,8 @@ async def get_products_variants_by_branch(product_id: int):
                     ON wv.product_id = wsv.product_id 
                     AND wv.size_id = wsv.size_id 
                     AND wv.color_id = wsv.color_id
+                LEFT JOIN web_variant_branch_assignment wvba
+                    ON wvba.variant_id = wv.id AND wvba.branch_id = s.id
                 WHERE wsv.product_id = $1
                 ORDER BY s.id, sz.size_name, c.color_name
             """

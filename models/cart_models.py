@@ -90,6 +90,7 @@ class CreateOrderRequest(BaseModel):
     shipping_cost: float = Field(0, ge=0, description="Costo de envío")
     notes: Optional[str] = Field(None, description="Notas adicionales para el pedido")
     payment_method: Optional[str] = Field(None, description="Método de pago (para futuro uso)")
+    branch_id: Optional[int] = Field(None, description="ID de la sucursal para retiro (opcional)")
     
     class Config:
         json_schema_extra = {

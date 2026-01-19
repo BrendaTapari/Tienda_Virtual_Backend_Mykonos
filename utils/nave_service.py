@@ -99,7 +99,7 @@ def create_payment_preference(payment_data: dict) -> str:
                              'items' (optional list of products), 'external_payment_id' (optional).
     
     Returns:
-        str: The checkout URL (checkout_url).
+        dict: A dictionary containing 'checkout_url' and 'payment_request_id'.
     """
     try:
         # Note: Depending on the specific authentication flow for this new endpoint,
@@ -189,7 +189,9 @@ def create_payment_preference(payment_data: dict) -> str:
             ],
             "buyer": buyer,
             "additional_info": {
-                "callback_url": callback_url or "https://google.com" # Fallback if env var missing
+                "callback_url": callback_url or "https://google.com",  # Client Redirect (Frontend)
+                # Select Webhook URL based on mode (Sandbox vs Prod)
+                "notification_url": os.getenv("MY_SANDBOX_NOTIFICATION_URL") if os.getenv("NAVE_CLIENT_ID_SANDBOX") else os.getenv("MY_NOTIFICATION_URL")
             },
             "duration_time": 3000
         }
@@ -211,20 +213,170 @@ def create_payment_preference(payment_data: dict) -> str:
         data = response.json()
         
         # Updated to simpler structure based on user feedback
+        payment_request_id = data.get("id")
         checkout_url = data.get("checkout_url")
         
         if not checkout_url:
              raise ValueError(f"Could not find checkout_url in response: {data}")
              
-        return checkout_url
+        return {
+            "checkout_url": checkout_url,
+            "payment_request_id": payment_request_id
+        }
 
     except requests.RequestException as e:
         error_msg = f"Failed to create payment preference: {str(e)}"
         if hasattr(e, 'response') and e.response is not None:
              error_msg += f"\nResponse Body: {e.response.text}"
+        
+        # Log payload for debugging
+        print(f"FAILED PAYLOAD: {payload}")
         raise Exception(error_msg)
     except Exception as e:
         raise Exception(f"Error creating payment preference: {str(e)}")
+
+def check_payment_request_status(payment_request_id: str) -> dict:
+    """
+    Checks the status of a payment intent using the payment_request_id.
+    Endpoint: GET https://api-sandbox.ranty.io/api/payment_requests/{payment_request_id}
+    
+    Args:
+        payment_request_id (str): The ID of the payment request in Nave/Ranty.
+    
+    Returns:
+        dict: The payment request details.
+    """
+    try:
+        token = get_nave_token()
+        
+        # Determine URL based on environment (simplistic check, user gave Sandbox URL)
+        # Ideally we check env vars again, but for now we default to the logic used for Auth URL
+        # Sandbox URL provided by user:
+        if os.getenv("NAVE_CLIENT_ID_SANDBOX"):
+             base_url = "https://api-sandbox.ranty.io/api/payment_requests"
+        else:
+             # Fallback/Prod URL? Assuming standard pattern or env
+             base_url = "https://api.ranty.io/api/payment_requests" 
+             
+        check_url = f"{base_url}/{payment_request_id}"
+            
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.get(check_url, headers=headers)
+        response.raise_for_status()
+        
+        return response.json()
+        
+    except requests.RequestException as e:
+        error_msg = f"Failed to check payment request status: {str(e)}"
+        if hasattr(e, 'response') and e.response is not None:
+             error_msg += f"\nResponse Body: {e.response.text}"
+        raise Exception(error_msg)
+    except Exception as e:
+        raise Exception(f"Error checking payment request status: {str(e)}")
+
+def cancel_payment_request(payment_request_id: str) -> dict:
+    """
+    Cancels a payment request (intention) if it hasn't been used.
+    Endpoint: DELETE https://api-sandbox.ranty.io/api/payment_requests/{payment_request_id}
+    
+    Args:
+        payment_request_id (str): The ID of the payment request.
+        
+    Returns:
+        dict: Response from Nave (e.g., {"message": "Payment request deleted"})
+    """
+    try:
+        token = get_nave_token()
+        
+        # Sandbox URL (Strictly per user instruction)
+        base_url = "https://api-sandbox.ranty.io/api/payment_requests"
+        cancel_url = f"{base_url}/{payment_request_id}"
+            
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.delete(cancel_url, headers=headers)
+        
+        # Handle specific 400/404/etc manually if needed, or just raise
+        # User mentioned: "If it can't be cancelled, you will receive a corresponding error code"
+        try:
+             response.raise_for_status()
+        except requests.HTTPError:
+             # Try to return the error JSON if available for better debugging
+             try:
+                 error_json = response.json()
+                 # Raise specific error with message from Nave
+                 raise Exception(f"Cancellation Failed: {error_json.get('message', 'Unknown Error')}")
+             except ValueError:
+                 pass # Not JSON
+             raise
+        
+        return response.json()
+        
+    except requests.RequestException as e:
+        error_msg = f"Failed to cancel payment request: {str(e)}"
+        if hasattr(e, 'response') and e.response is not None:
+             error_msg += f"\nResponse Body: {e.response.text}"
+        raise Exception(error_msg)
+    except Exception as e:
+        raise Exception(str(e))
+
+def cancel_payment(payment_id: str) -> dict:
+    """
+    Cancels/Refunds a payment that is in APPROVED state.
+    Endpoint: DELETE https://api-sandbox.ranty.io/api/payments/{payment_id}
+    
+    Args:
+        payment_id (str): The ID of the payment (not the request ID).
+        
+    Returns:
+        dict: Response containing status (e.g. "CANCELLING")
+    """
+    try:
+        token = get_nave_token()
+        
+        # Sandbox URL
+        base_url = "https://api-sandbox.ranty.io/api/payments"
+        cancel_url = f"{base_url}/{payment_id}"
+            
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.delete(cancel_url, headers=headers)
+        
+        # Check for specific error codes as per documentation
+        if response.status_code >= 400:
+             try:
+                 error_data = response.json()
+                 code = error_data.get('code')
+                 message = error_data.get('message')
+                 raise Exception(f"Payment Cancellation Error ({code}): {message}")
+             except ValueError:
+                 # Not JSON
+                 response.raise_for_status()
+        
+        return response.json()
+        
+    except requests.RequestException as e:
+        error_msg = f"Failed to cancel payment: {str(e)}"
+        if hasattr(e, 'response') and e.response is not None:
+             try:
+                 # Try to extract message if standard requests didn't catch it above
+                 err_json = e.response.json()
+                 error_msg = f"{err_json.get('message', str(e))}"
+             except:
+                 error_msg += f"\nResponse Body: {e.response.text}"
+        raise Exception(error_msg)
+    except Exception as e:
+        raise Exception(str(e))
 
 if __name__ == "__main__":
     # Simple test if run directly
@@ -240,3 +392,39 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"Error: {e}")
+
+def check_payment_status(payment_check_url: str) -> dict:
+    """
+    Checks the status of a payment using the provided check URL.
+    
+    Args:
+        payment_check_url (str): The URL provided in the webhook to check payment status.
+                                 Example: "api.ranty.io/ranty-payments/payments/test_id_123"
+    
+    Returns:
+        dict: The payment status details.
+    """
+    try:
+        token = get_nave_token()
+        
+        # Ensure URL has scheme
+        if not payment_check_url.startswith("http"):
+            payment_check_url = f"https://{payment_check_url}"
+            
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.get(payment_check_url, headers=headers)
+        response.raise_for_status()
+        
+        return response.json()
+        
+    except requests.RequestException as e:
+        error_msg = f"Failed to check payment status: {str(e)}"
+        if hasattr(e, 'response') and e.response is not None:
+             error_msg += f"\nResponse Body: {e.response.text}"
+        raise Exception(error_msg)
+    except Exception as e:
+        raise Exception(f"Error checking payment status: {str(e)}")

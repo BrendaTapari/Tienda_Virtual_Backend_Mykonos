@@ -16,6 +16,7 @@ from models.order_models import (
     TrackingHistoryItem
 )
 from utils.auth import require_admin
+from utils.email import send_ready_for_pickup_email
 import logging
 
 logger = logging.getLogger(__name__)
@@ -435,8 +436,17 @@ async def update_order_status(order_id: int, status_data: UpdateOrderStatus):
     Requires: Admin authentication
     """
     try:
-        # Check if order exists
-        order = await db.fetch_one("SELECT id FROM sales WHERE id = $1", order_id)
+        # Check if order exists and get user info
+        order = await db.fetch_one(
+            """
+            SELECT s.id, wu.email, wu.username, s.shipping_address, s.delivery_type 
+            FROM sales s
+            LEFT JOIN web_users wu ON s.web_user_id = wu.id
+            WHERE s.id = $1
+            """,
+            order_id
+        )
+        
         if not order:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -464,6 +474,20 @@ async def update_order_status(order_id: int, status_data: UpdateOrderStatus):
             status_data.status,
             description
         )
+        
+        # Send email if status is 'lista_para_retirar'
+        if status_data.status == 'lista_para_retirar' and order['email']:
+            try:
+                # Use default address or logic to determine branch address
+                # For now using default main branch address
+                await send_ready_for_pickup_email(
+                    email=order['email'],
+                    username=order['username'] or "Cliente",
+                    order_id=order_id
+                )
+                logger.info(f"Sent ready for pickup email to {order['email']} for order {order_id}")
+            except Exception as e:
+                logger.error(f"Failed to send ready for pickup email: {e}")
         
         return {
             "message": "Estado de la orden actualizado exitosamente",
@@ -510,7 +534,7 @@ async def get_dashboard_stats():
         # Order statistics
         total_orders = await db.fetch_val("SELECT COUNT(*) FROM sales")
         orders_pending = await db.fetch_val(
-            "SELECT COUNT(*) FROM sales WHERE status = 'Pendiente' OR shipping_status = 'pendiente'"
+            "SELECT COUNT(*) FROM sales WHERE status = 'Completada' AND shipping_status = 'pendiente'"
         )
         
         # Orders this month

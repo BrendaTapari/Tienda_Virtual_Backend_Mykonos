@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS reservation_expires_at TIMESTAMP;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS payment_method TEXT;
+
+COMMIT;

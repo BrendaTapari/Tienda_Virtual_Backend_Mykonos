@@ -164,6 +164,10 @@ app.include_router(promotions.router, prefix="/promotions", tags=["Promociones"]
 from routes import nave_payments
 app.include_router(nave_payments.router, prefix="/api/nave", tags=["Pagos Nave"])
 
+# Import and include payment webhooks (callbacks)
+from routes import payment_webhooks
+app.include_router(payment_webhooks.router, prefix="/api/payments", tags=["Webhooks Pagos"])
+
 # Mount static files directory for product images
 # Using shared directory that multiple backends access
 images_dir = "/home/breightend/imagenes-productos"

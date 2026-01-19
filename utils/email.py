@@ -389,3 +389,78 @@ async def send_new_order_notification_to_business(
     
     await fastmail.send_message(message)
 
+
+async def send_ready_for_pickup_email(
+    email: str, 
+    username: str, 
+    order_id: int, 
+    pickup_address: str = "San Luis 887, Concordia, Entre Ríos",
+    schedule: str = "Lunes a Sábados de 9:00 a 12:30 y de 16:30 a 20:30",
+    base_url: str = FRONTEND_URL
+):
+    """
+    Send email notification when order is ready for pickup
+    
+    Args:
+        email: User's email address
+        username: User's username
+        order_id: Order ID
+        pickup_address: Address where to pick up the order
+        schedule: Pickup schedule
+    """
+    html_content = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #2c3e50; border-bottom: 3px solid #FF6B35; padding-bottom: 10px;">
+                    ¡Tu pedido está listo! 🛍️
+                </h1>
+                
+                <p>Hola <strong>{username}</strong>,</p>
+                
+                <p>Nos alegra informarte que tu pedido <strong>#{order_id}</strong> ya está listo para ser retirado.</p>
+                
+                <div style="background-color: #fff3cd; padding: 20px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #FF6B35;">
+                    <h3 style="margin-top: 0; color: #2c3e50;">Información de Retiro:</h3>
+                    <p><strong>📍 Dirección:</strong> {{pickup_address}}</p>
+                    <p><strong>🕒 Horarios:</strong> {{schedule}}</p>
+                    <p><strong>📝 Requisitos:</strong> Por favor presenta tu número de pedido ({{order_id}}) o tu DNI al retirar.</p>
+                </div>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{{base_url}}/order-tracking/{{order_id}}" 
+                       style="background-color: #FF6B35; color: white; padding: 12px 30px; 
+                              text-decoration: none; border-radius: 5px; display: inline-block;">
+                        Ver Detalles del Pedido
+                    </a>
+                </div>
+                
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                
+                <p style="color: #7f8c8d; font-size: 12px; text-align: center;">
+                    © 2025 Mykonos. Todos los derechos reservados.
+                </p>
+            </div>
+        </body>
+    </html>
+    """
+    
+    # Format the content
+    html_content = html_content.format(
+        username=username,
+        order_id=order_id,
+        pickup_address=pickup_address,
+        schedule=schedule,
+        base_url=base_url
+    )
+    
+    message = MessageSchema(
+        subject=f"¡Tu pedido #{order_id} está listo para retirar! - Mykonos",
+        recipients=[email],
+        body=html_content,
+        subtype=MessageType.html
+    )
+    
+    await fastmail.send_message(message)
+
+

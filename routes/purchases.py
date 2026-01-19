@@ -16,6 +16,7 @@ router = APIRouter()
 
 # Frontend URL for tracking links
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://mykonosboutique.com.ar")
+RESERVATION_MINUTES = 30
 
 
 async def get_user_by_token(token: str):
@@ -209,7 +210,7 @@ async def get_purchase_detail(
         
         sale_dict = dict(sale)
         
-        # Get sale details (products)
+        # Get sale details (products) with images
         details = await conn.fetch(
             """
             SELECT 
@@ -226,7 +227,14 @@ async def get_purchase_detail(
                 sd.tax_amount,
                 sd.subtotal,
                 sd.total,
-                p.id as product_id
+                p.id as product_id,
+                (
+                    SELECT image_url 
+                    FROM images 
+                    WHERE product_id = p.id 
+                    ORDER BY orden ASC 
+                    LIMIT 1
+                ) as image_url
             FROM sales_detail sd
             LEFT JOIN products p ON sd.product_id = p.id
             WHERE sd.sale_id = $1
@@ -234,29 +242,7 @@ async def get_purchase_detail(
             purchase_id
         )
         
-        # Get product images
-        items = []
-        for detail in details:
-            detail_dict = dict(detail)
-            
-            if detail_dict['product_id']:
-                image = await conn.fetchrow(
-                    """
-                    SELECT image_url
-                    FROM images
-                    WHERE product_id = $1
-                    ORDER BY orden ASC
-                    LIMIT 1
-                    """,
-                    detail_dict['product_id']
-                )
-                detail_dict['image_url'] = image['image_url'] if image else None
-            else:
-                detail_dict['image_url'] = None
-            
-            items.append(detail_dict)
-        
-        sale_dict['items'] = items
+        sale_dict['items'] = [dict(d) for d in details]
         
         # Get tracking history if table exists
         try:
@@ -288,6 +274,23 @@ async def get_purchase_detail(
 
 @router.post("/create-order")
 async def create_order(
+    order_data: CreateOrderRequest,
+    authorization: Optional[str] = Header(None)
+):
+    try:
+        return await _create_order_impl(order_data, authorization)
+    except HTTPException:
+        # Re-raise standard HTTP exceptions (400, 401, etc.) unmodified
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"DEBUG ERROR: {str(e)}"
+        )
+
+async def _create_order_impl(
     order_data: CreateOrderRequest,
     authorization: Optional[str] = Header(None)
 ):
@@ -343,6 +346,19 @@ async def create_order(
                     detail="El carrito está vacío. Agrega productos antes de crear un pedido."
                 )
             
+            # AUTO-CLEANUP: Cancel previous active reservations for this user to prevent self-blocking
+            # Find recent pending sales for this user with active reservations
+            await conn.execute("""
+                UPDATE stock_reservations
+                SET status = 'cancelled'
+                WHERE status = 'active'
+                AND sale_id IN (
+                    SELECT id FROM sales 
+                    WHERE (customer_id = $1 OR web_user_id = $1)
+                    AND status = 'Pendiente de pago'
+                )
+            """, current_user['id'])
+
             # Get cart items with product details
             cart_items = await conn.fetch(
                 """
@@ -352,7 +368,12 @@ async def create_order(
                     wci.variant_id,
                     wci.quantity,
                     p.nombre_web as product_name,
-                    p.precio_web as unit_price,
+                    -- Fix Price: Apply discount if active
+                    CASE 
+                        WHEN p.has_discount = 1 THEN 
+                             CAST(p.precio_web * (1 - p.discount_percentage / 100.0) AS NUMERIC)
+                        ELSE p.precio_web 
+                    END as unit_price,
                     p.provider_code as product_code,
                     COALESCE(s_web.size_name, s_warehouse.size_name) as size_name,
                     COALESCE(c_web.color_name, c_warehouse.color_name) as color_name,
@@ -363,13 +384,16 @@ async def create_order(
                         WHERE wvba.variant_id = wci.variant_id
                     ), (
                         SELECT SUM(wvba.cantidad_asignada)
-                        FROM warehouse_stock_variants wsv
-                        JOIN web_variants wv ON wv.product_id = wsv.product_id 
-                            AND wv.size_id = wsv.size_id 
-                            AND wv.color_id = wsv.color_id
-                        JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
-                        WHERE wsv.id = wci.variant_id
+                        FROM warehouse_stock_variants wsv_stock
+                        JOIN web_variants wv_stock ON wv_stock.product_id = wsv_stock.product_id 
+                            AND wv_stock.size_id = wsv_stock.size_id 
+                            AND wv_stock.color_id = wsv_stock.color_id
+                        JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv_stock.id
+                        WHERE wsv_stock.id = wci.variant_id
                     ), 0) as stock_available,
+
+                     -- Resolve real Warehouse Variant ID for Sales Detail FK
+                    wsv.id as warehouse_variant_id,
                     -- Get currently reserved stock for this variant
                     COALESCE((
                         SELECT SUM(sr.quantity)
@@ -383,11 +407,20 @@ async def create_order(
                 LEFT JOIN web_variants wv ON wci.variant_id = wv.id
                 LEFT JOIN sizes s_web ON wv.size_id = s_web.id
                 LEFT JOIN colors c_web ON wv.color_id = c_web.id
-                LEFT JOIN warehouse_stock_variants wsv ON wci.variant_id = wsv.id
+                -- Fix Duplication: Use LEFT JOIN LATERAL to pick ONLY ONE matching warehouse variant
+                LEFT JOIN LATERAL (
+                    SELECT id, variant_barcode, size_id, color_id
+                    FROM warehouse_stock_variants
+                    WHERE product_id = wci.product_id 
+                    AND size_id = wv.size_id 
+                    AND color_id = wv.color_id
+                    ORDER BY id ASC
+                    LIMIT 1
+                ) wsv ON TRUE
                 LEFT JOIN sizes s_warehouse ON wsv.size_id = s_warehouse.id
                 LEFT JOIN colors c_warehouse ON wsv.color_id = c_warehouse.id
                 WHERE wci.cart_id = $1
-                ORDER BY wci.created_at
+                ORDER BY wci.id, wci.created_at
                 """,
                 cart['id']
             )
@@ -410,14 +443,20 @@ async def create_order(
                     )
             
             # Calculate totals
+            # Enforce free shipping for store pickup
+            final_shipping_cost = order_data.shipping_cost
+            if order_data.delivery_type == 'retiro':
+                final_shipping_cost = 0.0
+            
             subtotal = sum(float(item['unit_price']) * item['quantity'] for item in cart_items)
-            total = subtotal + order_data.shipping_cost
+            total = subtotal + final_shipping_cost
             
             # Calculate expiration time
             reservation_expires_at = await conn.fetchval(
-                "SELECT CURRENT_TIMESTAMP + INTERVAL '%s minutes'",
-                RESERVATION_MINUTES
+                f"SELECT CURRENT_TIMESTAMP + INTERVAL '{RESERVATION_MINUTES} minutes'"
             )
+            if hasattr(reservation_expires_at, 'tzinfo') and reservation_expires_at.tzinfo:
+                reservation_expires_at = reservation_expires_at.replace(tzinfo=None)
             
             # Create sale record with reservation expiration
             sale = await conn.fetchrow(
@@ -440,13 +479,15 @@ async def create_order(
                     delivery_type,
                     notes,
                     reservation_expires_at,
+                    payment_method,
                     created_at,
                     updated_at
                 )
-                VALUES ($1, NULL, NULL, NULL, CURRENT_TIMESTAMP, $2, 0, 0, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES ($1, 1, 1, $2, CURRENT_TIMESTAMP, $3, 0, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 RETURNING id, sale_date, subtotal, total, status, shipping_status, reservation_expires_at
                 """,
                 current_user['id'],
+                order_data.branch_id or 1,  # Use provided branch_id or default to 1 (Main/Concordia?)
                 subtotal,
                 total,
                 'Pendiente',  # Status pending until payment is confirmed
@@ -456,7 +497,8 @@ async def create_order(
                 order_data.shipping_cost,
                 order_data.delivery_type,
                 order_data.notes,
-                reservation_expires_at
+                reservation_expires_at,
+                order_data.payment_method
             )
             
             sale_id = sale['id']
@@ -464,6 +506,9 @@ async def create_order(
             # Create sale details and stock reservations for each cart item
             order_items = []
             for item in cart_items:
+                # Use resolved warehouse_variant_id. If missing, use None (will insert NULL)
+                warehouse_variant_to_use = item['warehouse_variant_id']
+
                 # Create sale detail
                 sale_detail = await conn.fetchrow(
                     """
@@ -491,7 +536,7 @@ async def create_order(
                     """,
                     sale_id,
                     item['product_id'],
-                    item['variant_id'],
+                    warehouse_variant_to_use,
                     item['product_name'],
                     item['product_code'],
                     item['size_name'],
@@ -551,11 +596,12 @@ async def create_order(
                 'Sistema Web',
             )
             
-            # Clear the cart
-            await conn.execute(
-                "DELETE FROM web_cart_items WHERE cart_id = $1",
-                cart['id']
-            )
+            # Clear the cart - MOVED TO PAYMENT CONFIRMATION
+            # to prevent lost carts on payment failure
+            # await conn.execute(
+            #     "DELETE FROM web_cart_items WHERE cart_id = $1",
+            #     cart['id']
+            # )
             
             # Prepare tracking link
             tracking_link = f"{FRONTEND_URL}/order-tracking/{sale_id}"
@@ -631,6 +677,7 @@ async def confirm_payment(
                     s.total,
                     s.shipping_address,
                     s.delivery_type,
+                    s.storage_id,
                     s.web_user_id,
                     wu.username,
                     wu.email,
@@ -649,6 +696,8 @@ async def confirm_payment(
                     detail="Pedido no encontrado"
                 )
             
+            # ... (validation logic remains same) ...
+            
             # Validate order is pending
             if order['status'] != 'Pendiente':
                 raise HTTPException(
@@ -659,6 +708,14 @@ async def confirm_payment(
             # Check if reservation expired
             if order['reservation_expires_at']:
                 now = await conn.fetchval("SELECT CURRENT_TIMESTAMP")
+                # Ensure timezone compatibility
+                if order['reservation_expires_at'].tzinfo is None and now.tzinfo is not None:
+                    now = now.replace(tzinfo=None)
+                elif order['reservation_expires_at'].tzinfo is not None and now.tzinfo is None:
+                    # Look up how asyncpg returns it, usually aware. If order is aware, make now aware? 
+                    # Simpler to just strip both or ensure now matches order.
+                     now = now.replace(tzinfo=order['reservation_expires_at'].tzinfo)
+                
                 if now > order['reservation_expires_at']:
                     # Auto-cancel expired order
                     await conn.execute(
@@ -666,7 +723,7 @@ async def confirm_payment(
                         order_id
                     )
                     await conn.execute(
-                        "UPDATE stock_reservations SET status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE sale_id = $1",
+                        "UPDATE stock_reservations SET status = 'expired' WHERE sale_id = $1",
                         order_id
                     )
                     raise HTTPException(
@@ -701,14 +758,18 @@ async def confirm_payment(
                 quantity_to_deduct = reservation['quantity']
                 
                 # Get branch assignments for this variant
+                # PRIORITIZE the selected branch (storage_id)
                 assignments = await conn.fetch(
                     """
                     SELECT id, branch_id, cantidad_asignada
                     FROM web_variant_branch_assignment
                     WHERE variant_id = $1 AND cantidad_asignada > 0
-                    ORDER BY cantidad_asignada DESC
+                    ORDER BY 
+                        CASE WHEN branch_id = $2 THEN 0 ELSE 1 END,
+                        cantidad_asignada DESC
                     """,
-                    variant_id
+                    variant_id,
+                    order['storage_id'] or 0
                 )
                 
                 remaining_to_deduct = quantity_to_deduct
@@ -722,9 +783,9 @@ async def confirm_payment(
                     # Update assignment
                     await conn.execute(
                         """
-                        UPDATE web_variant_branch_assignment
-                        SET cantidad_asignada = cantidad_asignada - $1,
-                            updated_at = CURRENT_TIMESTAMP
+                        UPDATE warehouse_stock_variants
+                        SET quantity = quantity - $1,
+                            last_updated = CURRENT_TIMESTAMP
                         WHERE id = $2
                         """,
                         deduct_from_this,
@@ -751,11 +812,25 @@ async def confirm_payment(
                 await conn.execute(
                     """
                     UPDATE stock_reservations
-                    SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP
+                    SET status = 'confirmed'
                     WHERE id = $1
                     """,
                     reservation['id']
                 )
+
+            # Clear the cart for this user (if exists)
+            # We need to find the cart for the user who made the order
+            cart = await conn.fetchrow(
+                "SELECT id FROM web_carts WHERE user_id = $1",
+                order['web_user_id']
+            )
+            
+            if cart:
+                await conn.execute(
+                    "DELETE FROM web_cart_items WHERE cart_id = $1",
+                    cart['id']
+                )
+
             
             # Update order status
             await conn.execute(
@@ -763,13 +838,10 @@ async def confirm_payment(
                 UPDATE sales
                 SET status = 'Completada',
                     shipping_status = 'preparando',
-                    payment_proof_url = $1,
-                    payment_reference = $2,
-                    payment_confirmed_at = CURRENT_TIMESTAMP,
+                    payment_reference = $1,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
+                WHERE id = $2
                 """,
-                payment_data.payment_proof_url,
                 payment_data.payment_reference,
                 order_id
             )

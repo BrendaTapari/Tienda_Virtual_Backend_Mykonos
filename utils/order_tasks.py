@@ -30,7 +30,7 @@ async def cancel_expired_orders():
                 """
                 SELECT id, web_user_id
                 FROM sales
-                WHERE status = 'Pendiente'
+                WHERE status = 'Pendiente de pago'
                 AND reservation_expires_at < CURRENT_TIMESTAMP
                 AND reservation_expires_at IS NOT NULL
                 """

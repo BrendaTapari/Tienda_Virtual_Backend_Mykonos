@@ -331,7 +331,7 @@ async def upload_promotion_image(image: NotificationImageUpload, current_user: d
             filename = f"{uuid.uuid4()}_{image.filename}"
             
         # Ruta donde se guardan las imagenes
-        upload_dir = "/home/breightend/Tienda_Virtual_Backend_Mykonos/uploads/promotions"
+        upload_dir = "/home/breightend/galeria_imagenes_mykonos/imagenes_promociones"
         os.makedirs(upload_dir, exist_ok=True)
         
         file_path = os.path.join(upload_dir, filename)
@@ -340,7 +340,7 @@ async def upload_promotion_image(image: NotificationImageUpload, current_user: d
             f.write(decoded_image)
             
         # URL publica para acceder a la imagen
-        image_url = f"https://api.mykonosboutique.com.ar/uploads/promotions/{filename}"
+        image_url = f"https://api.mykonosboutique.com.ar/static/promociones/{filename}"
         
         return {"image_url": image_url}
         
