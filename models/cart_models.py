@@ -85,12 +85,22 @@ class CheckoutRequest(BaseModel):
 
 class CreateOrderRequest(BaseModel):
     """Model for creating a purchase order from cart."""
-    shipping_address: str = Field(..., description="Dirección de envío completa")
+    shipping_address: Optional[str] = Field(None, description="Dirección de envío completa (Legacy)")
     delivery_type: str = Field(..., description="Tipo de entrega: 'envio' o 'retiro'")
     shipping_cost: float = Field(0, ge=0, description="Costo de envío")
     notes: Optional[str] = Field(None, description="Notas adicionales para el pedido")
     payment_method: Optional[str] = Field(None, description="Método de pago (para futuro uso)")
     branch_id: Optional[int] = Field(None, description="ID de la sucursal para retiro (opcional)")
+    
+    # New address fields
+    provincia: Optional[str] = Field(None, description="Province")
+    ciudad: Optional[str] = Field(None, description="City")
+    calle: Optional[str] = Field(None, description="Street")
+    numero: Optional[str] = Field(None, description="Number")
+    piso: Optional[str] = Field(None, description="Floor")
+    departamento: Optional[str] = Field(None, description="Apartment")
+    codigo_postal: Optional[str] = Field(None, description="Zip Code")
+    phone: Optional[str] = Field(None, description="Customer phone number")
     
     class Config:
         json_schema_extra = {

@@ -13,10 +13,10 @@ from datetime import datetime
 from models.user_models import (
     UserRegister, UserLogin, UserResponse, TokenResponse,
     UserUpdate, PasswordChange, EmailVerification, ResendVerification,
-    GoogleAuthCallback, GoogleUserInfo
+    GoogleAuthCallback, GoogleUserInfo, PasswordResetRequest, PasswordResetConfirm
 )
 from config.db_connection import DatabaseManager
-from utils.email import send_verification_email
+from utils.email import send_verification_email, send_password_reset_email
 
 router = APIRouter()
 
@@ -51,6 +51,7 @@ async def get_user_by_token(token: str):
         user = await conn.fetchrow(
             """
             SELECT id, username, fullname, email, phone, domicilio, cuit, 
+                   provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
                    role, status, profile_image_url, email_verified, created_at
             FROM web_users
             WHERE session_token = $1 AND status = 'active'
@@ -116,9 +117,11 @@ async def register(user_data: UserRegister):
             """
             INSERT INTO web_users 
             (username, fullname, email, password, phone, domicilio, cuit, 
+             provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
              role, status, session_token, email_verified, verification_token)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             RETURNING id, username, fullname, email, phone, domicilio, cuit, 
+                      provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
                       role, status, profile_image_url, email_verified, created_at
             """,
             user_data.username,
@@ -128,6 +131,13 @@ async def register(user_data: UserRegister):
             user_data.phone,
             user_data.domicilio,
             user_data.cuit,
+            user_data.provincia,
+            user_data.ciudad,
+            user_data.calle,
+            user_data.numero,
+            user_data.piso,
+            user_data.departamento,
+            user_data.codigo_postal,
             "customer",  # Default role
             "active",    # Default status
             session_token,
@@ -270,6 +280,7 @@ async def login(credentials: UserLogin):
         user = await conn.fetchrow(
             """
             SELECT id, username, fullname, email, phone, domicilio, cuit, 
+                   provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
                    role, status, profile_image_url, email_verified, created_at, password
             FROM web_users
             WHERE (username = $1 OR email = $1)
@@ -441,6 +452,37 @@ async def update_current_user(
         update_fields.append(f"profile_image_url = ${param_count}")
         values.append(user_update.profile_image_url)
         param_count += 1
+        
+    if user_update.cuit is not None:
+        # Check if cuit is already used by another user
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT id FROM web_users WHERE cuit = $1 AND id != $2",
+                user_update.cuit,
+                current_user['id']
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="CUIT already in use by another user"
+                )
+        
+        update_fields.append(f"cuit = ${param_count}")
+        values.append(user_update.cuit)
+        param_count += 1
+        
+    # Address fields
+    address_fields = ['provincia', 'ciudad', 'calle', 'numero', 'piso', 'departamento', 'codigo_postal']
+    for field in address_fields:
+        val = getattr(user_update, field)
+        if val is not None:
+            update_fields.append(f"{field} = ${param_count}")
+            values.append(val)
+            param_count += 1
+
+
+        
+
     
     if not update_fields:
         raise HTTPException(
@@ -456,6 +498,7 @@ async def update_current_user(
         SET {', '.join(update_fields)}
         WHERE id = ${param_count}
         RETURNING id, username, fullname, email, phone, domicilio, cuit, 
+                  provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
                   role, status, profile_image_url, email_verified, created_at
     """
     
@@ -511,6 +554,103 @@ async def change_password(
         )
     
     return {"message": "Password changed successfully"}
+
+
+@router.post("/forgot-password")
+async def forgot_password(request: PasswordResetRequest):
+    """
+    Request a password reset email.
+    
+    - **email**: Email address associated with the account
+    """
+    pool = await DatabaseManager.get_pool()
+    
+    async with pool.acquire() as conn:
+        # Check if user exists
+        user = await conn.fetchrow(
+            "SELECT id, username, email FROM web_users WHERE email = $1",
+            request.email
+        )
+        
+        if not user:
+            # Don't reveal if email exists or not
+            return {"message": "If the email exists, a password reset link has been sent"}
+        
+        # Generate token and expiration (1 hour)
+        reset_token = str(uuid.uuid4())
+        
+        # Update user with token and expiration
+        # Note: Using NOW() + INTERVAL '1 hour' for expiration
+        await conn.execute(
+            """
+            UPDATE web_users 
+            SET reset_password_token = $1, 
+                reset_password_expires_at = NOW() + INTERVAL '1 hour'
+            WHERE id = $2
+            """,
+            reset_token,
+            user['id']
+        )
+        
+        # Send email
+        try:
+            await send_password_reset_email(
+                email=user['email'],
+                username=user['username'],
+                reset_token=reset_token
+            )
+        except Exception as e:
+            print(f"Error sending password reset email: {e}")
+            # Log error but return success to user/frontend
+            
+    return {"message": "If the email exists, a password reset link has been sent"}
+
+
+@router.post("/reset-password")
+async def reset_password(reset_data: PasswordResetConfirm):
+    """
+    Reset password using a valid token.
+    
+    - **token**: Reset token from email
+    - **new_password**: New password
+    """
+    pool = await DatabaseManager.get_pool()
+    
+    async with pool.acquire() as conn:
+        # Find user by token and check expiration
+        user = await conn.fetchrow(
+            """
+            SELECT id, username, email 
+            FROM web_users 
+            WHERE reset_password_token = $1 
+              AND reset_password_expires_at > NOW()
+            """,
+            reset_data.token
+        )
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired reset token"
+            )
+        
+        # Hash new password
+        hashed_password = hash_password(reset_data.new_password)
+        
+        # Update user: set new password and clear reset fields
+        await conn.execute(
+            """
+            UPDATE web_users 
+            SET password = $1, 
+                reset_password_token = NULL,
+                reset_password_expires_at = NULL
+            WHERE id = $2
+            """,
+            hashed_password,
+            user['id']
+        )
+        
+    return {"message": "Password has been reset successfully. You can now login with your new password."}
 
 
 @router.get("/google/login")
@@ -760,6 +900,32 @@ async def update_user_by_admin(user_id: int, user_update: UserUpdate):
             update_fields.append(f"profile_image_url = ${param_count}")
             values.append(user_update.profile_image_url)
             param_count += 1
+
+        if user_update.cuit is not None:
+            # Check if cuit is already used by another user
+            existing = await conn.fetchrow(
+                "SELECT id FROM web_users WHERE cuit = $1 AND id != $2",
+                user_update.cuit,
+                user_id
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="CUIT already in use by another user"
+                )
+            
+            update_fields.append(f"cuit = ${param_count}")
+            values.append(user_update.cuit)
+            param_count += 1
+            
+        # Address fields
+        address_fields = ['provincia', 'ciudad', 'calle', 'numero', 'piso', 'departamento', 'codigo_postal']
+        for field in address_fields:
+            val = getattr(user_update, field)
+            if val is not None:
+                update_fields.append(f"{field} = ${param_count}")
+                values.append(val)
+                param_count += 1
         
         if not update_fields:
             raise HTTPException(
@@ -776,6 +942,7 @@ async def update_user_by_admin(user_id: int, user_update: UserUpdate):
             SET {', '.join(update_fields)}
             WHERE id = ${param_count}
             RETURNING id, username, fullname, email, phone, domicilio, cuit, 
+                      provincia, ciudad, calle, numero, piso, departamento, codigo_postal,
                       role, status, profile_image_url, email_verified, created_at
         """
         

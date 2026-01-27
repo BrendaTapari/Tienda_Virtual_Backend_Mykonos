@@ -339,6 +339,14 @@ async def _create_order_impl(
                 "SELECT id FROM web_carts WHERE user_id = $1",
                 current_user['id']
             )
+
+            # Update user phone if provided in the order
+            if order_data.phone:
+                await conn.execute(
+                    "UPDATE web_users SET phone = $1 WHERE id = $2",
+                    order_data.phone,
+                    current_user['id']
+                )
             
             if not cart:
                 raise HTTPException(
@@ -458,6 +466,23 @@ async def _create_order_impl(
             if hasattr(reservation_expires_at, 'tzinfo') and reservation_expires_at.tzinfo:
                 reservation_expires_at = reservation_expires_at.replace(tzinfo=None)
             
+            # Construct shipping_address if not provided but split fields are
+            shipping_address = order_data.shipping_address
+            if not shipping_address:
+                parts = []
+                if order_data.calle: parts.append(f"{order_data.calle} {order_data.numero or ''}")
+                if order_data.piso: parts.append(f"Piso {order_data.piso}")
+                if order_data.departamento: parts.append(f"Depto {order_data.departamento}")
+                if order_data.ciudad: parts.append(order_data.ciudad)
+                if order_data.provincia: parts.append(order_data.provincia)
+                if order_data.codigo_postal: parts.append(f"CP {order_data.codigo_postal}")
+                
+                if parts:
+                    shipping_address = ", ".join(parts)
+                else:
+                    # Fallback for pickup or if no address provided (should be validated earlier if required)
+                    shipping_address = "Dirección no provista" if order_data.delivery_type == 'envio' else "Retiro en sucursal"
+
             # Create sale record with reservation expiration
             sale = await conn.fetchrow(
                 """
@@ -492,7 +517,7 @@ async def _create_order_impl(
                 total,
                 'Pendiente',  # Status pending until payment is confirmed
                 'web',
-                order_data.shipping_address,
+                shipping_address,
                 'pendiente',
                 order_data.shipping_cost,
                 order_data.delivery_type,
@@ -618,7 +643,7 @@ async def _create_order_impl(
                 'shipping_cost': float(order_data.shipping_cost),
                 'status': sale['status'],
                 'shipping_status': sale['shipping_status'],
-                'shipping_address': order_data.shipping_address,
+                'shipping_address': shipping_address,
                 'delivery_type': order_data.delivery_type,
                 'notes': order_data.notes,
                 'items': order_items
@@ -677,6 +702,7 @@ async def confirm_payment(
                     s.total,
                     s.shipping_address,
                     s.delivery_type,
+                    s.notes,
                     s.storage_id,
                     s.web_user_id,
                     wu.username,
@@ -885,7 +911,8 @@ async def confirm_payment(
                     items_count=items_count,
                     shipping_address=order['shipping_address'],
                     delivery_type=order['delivery_type'],
-                    order_link=tracking_link
+                    order_link=tracking_link,
+                    customer_notes=order['notes']
                 )
             except Exception as e:
                 print(f"Warning: Failed to send business notification email: {e}")

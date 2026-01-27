@@ -28,6 +28,19 @@ class OrderListResponse(BaseModel):
     items_count: int = 0
     shipping_address: Optional[str] = None
     origin: str = "local"
+    delivery_type: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class PaginatedOrderResponse(BaseModel):
+    """Paginated response for order list."""
+    items: List[OrderListResponse]
+    total: int
+    page: int
+    limit: int
+    total_pages: int
     
     class Config:
         from_attributes = True
@@ -42,6 +55,8 @@ class OrderItem(BaseModel):
     quantity: int
     unit_price: float
     subtotal: float
+    barcode: Optional[str] = None
+    provider: Optional[str] = None
     
     class Config:
         from_attributes = True

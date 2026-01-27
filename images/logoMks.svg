@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <!-- Cuadrado superior izquierdo (completo) -->
+  <rect x="40" y="40" width="300" height="300" fill="#FF6B1A"/>
+  
+  <!-- Forma en L (cuadrado incompleto + pieza que lo completa) -->
+  <path d="M 90 390 L 90 760 L 760 760 L 760 90 L 380 90 L 380 390 Z" fill="#FF6B1A"/>
+</svg>

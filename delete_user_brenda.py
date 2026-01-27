@@ -11,9 +11,9 @@ sys.path.append('/home/breightend/Tienda_Virtual_Backend_Mykonos')
 from config.db_connection import db
 
 async def delete_user():
-    """Delete user brenda.tapari and all associated data"""
+    """Delete user brendatapa6 and all associated data"""
     
-    username = "brenda.tapari"
+    username = "brendatapa6"
     
     try:
         # Check if user exists

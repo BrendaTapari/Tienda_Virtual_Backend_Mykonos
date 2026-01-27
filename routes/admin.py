@@ -5,10 +5,12 @@ All endpoints require admin authentication.
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
+from datetime import datetime, time
 from config.db_connection import db
 from models.user_models import UserListResponse, UpdateUserRole, UpdateUserStatus
 from models.order_models import (
     OrderListResponse,
+    PaginatedOrderResponse,
     OrderDetailResponse,
     UpdateOrderStatus,
     OrderCustomer,
@@ -51,9 +53,9 @@ async def get_all_users(
                 u.username,
                 u.fullname,
                 u.email,
-                u.role,
-                u.status,
-                u.email_verified,
+                COALESCE(u.role, 'customer') as role,
+                COALESCE(u.status, 'active') as status,
+                COALESCE(u.email_verified, FALSE) as email_verified,
                 u.created_at,
                 COALESCE(COUNT(s.id), 0) as total_purchases
             FROM web_users u
@@ -212,24 +214,91 @@ async def update_user_status(user_id: int, status_data: UpdateUserStatus):
 
 # --- ORDER MANAGEMENT ENDPOINTS ---
 
-@router.get("/orders", response_model=List[OrderListResponse], dependencies=[Depends(require_admin)])
+@router.get("/orders", response_model=PaginatedOrderResponse, dependencies=[Depends(require_admin)])
 async def get_all_orders(
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
+    search: Optional[str] = Query(None, description="Search by order ID, username, or email"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD or ISO)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD or ISO)"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of orders to return"),
     offset: int = Query(0, ge=0, description="Number of orders to skip")
 ):
     """
-    Get all orders in the system (admin only).
+    Get all orders with pagination and filtering (admin only).
     
     Query Parameters:
-    - status: Filter by order status (optional)
-    - limit: Maximum number of results (default: 50)
-    - offset: Pagination offset (default: 0)
+    - status: Filter by order status
+    - search: Search by ID, username, email
+    - start_date: Filter orders after this date
+    - end_date: Filter orders before this date
+    - limit: Pagination limit (default 50)
+    - offset: Pagination offset (default 0)
     
-    Requires: Admin authentication
+    Returns:
+    - PaginatedOrderResponse containing items and metadata
     """
     try:
-        query = """
+        # Base WHERE clauses
+        filters = []
+        params = []
+        param_count = 1
+        
+        if status_filter:
+            filters.append(f"s.status = ${param_count}")
+            params.append(status_filter)
+            param_count += 1
+            
+        if search:
+            # Check if search is numeric (ID)
+            if search.isdigit():
+                filters.append(f"(s.id = ${param_count}::integer OR wu.username ILIKE ${param_count + 1} OR wu.email ILIKE ${param_count + 1})")
+                params.extend([int(search), f"%{search}%"])
+                param_count += 2
+            else:
+                filters.append(f"(wu.username ILIKE ${param_count} OR wu.email ILIKE ${param_count})")
+                params.append(f"%{search}%")
+                param_count += 1
+                
+        if start_date:
+            filters.append(f"s.sale_date >= ${param_count}")
+            # Try to parse date
+            try:
+                dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                # Fallback implementation or error handling
+                # Assuming YYYY-MM-DD
+                dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+            params.append(dt_start)
+            param_count += 1
+            
+        if end_date:
+            filters.append(f"s.sale_date <= ${param_count}")
+            try:
+                dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            except ValueError:
+                dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+            
+            # If it's just a date (midnight), set it to end of day 23:59:59 if no time included
+            # Check if original string had time component roughly
+            if "T" not in end_date and " " not in end_date:
+                 dt_end = dt_end.replace(hour=23, minute=59, second=59)
+            
+            params.append(dt_end)
+            param_count += 1
+            
+        where_clause = "WHERE " + " AND ".join(filters) if filters else ""
+        
+        # Calculate totals
+        count_query = f"""
+            SELECT COUNT(DISTINCT s.id)
+            FROM sales s
+            LEFT JOIN web_users wu ON s.web_user_id = wu.id
+            {where_clause}
+        """
+        total = await db.fetch_val(count_query, *params) or 0
+        
+        # Fetch items
+        query = f"""
             SELECT 
                 s.id as order_id,
                 s.sale_date as order_date,
@@ -238,6 +307,7 @@ async def get_all_orders(
                 s.total,
                 s.shipping_address,
                 s.origin,
+                s.delivery_type,
                 COALESCE(COUNT(sd.id), 0) as items_count,
                 wu.id as customer_id,
                 wu.username as customer_username,
@@ -245,19 +315,9 @@ async def get_all_orders(
             FROM sales s
             LEFT JOIN web_users wu ON s.web_user_id = wu.id
             LEFT JOIN sales_detail sd ON sd.sale_id = s.id
-        """
-        
-        params = []
-        param_count = 1
-        
-        if status_filter:
-            query += f" WHERE s.status = ${param_count}"
-            params.append(status_filter)
-            param_count += 1
-        
-        query += f"""
+            {where_clause}
             GROUP BY s.id, s.sale_date, s.status, s.shipping_status, s.total, s.shipping_address, s.origin,
-                     wu.id, wu.username, wu.email
+                     s.delivery_type, wu.id, wu.username, wu.email
             ORDER BY s.sale_date DESC
             LIMIT ${param_count} OFFSET ${param_count + 1}
         """
@@ -266,7 +326,7 @@ async def get_all_orders(
         orders = await db.fetch_all(query, *params)
         
         # Format response
-        result = []
+        items = []
         for order in orders:
             order_dict = dict(order)
             
@@ -279,7 +339,7 @@ async def get_all_orders(
                     "email": order_dict['customer_email']
                 }
             
-            result.append({
+            items.append({
                 "order_id": order_dict['order_id'],
                 "customer": customer,
                 "order_date": order_dict['order_date'],
@@ -288,10 +348,21 @@ async def get_all_orders(
                 "total": order_dict['total'],
                 "items_count": order_dict['items_count'],
                 "shipping_address": order_dict['shipping_address'],
-                "origin": order_dict['origin']
+                "origin": order_dict['origin'],
+                "delivery_type": order_dict['delivery_type']
             })
+            
+        import math
+        total_pages = math.ceil(total / limit)
+        page = (offset // limit) + 1
         
-        return result
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages
+        }
         
     except Exception as e:
         logger.error(f"Error fetching orders (admin): {e}")
@@ -355,8 +426,13 @@ async def get_order_details(order_id: int):
                 sd.color_name,
                 sd.quantity,
                 sd.sale_price as unit_price,
-                sd.subtotal
+                sd.subtotal,
+                wsv.variant_barcode as barcode,
+                e.entity_name as provider
             FROM sales_detail sd
+            LEFT JOIN warehouse_stock_variants wsv ON sd.variant_id = wsv.id
+            LEFT JOIN products p ON sd.product_id = p.id
+            LEFT JOIN entities e ON p.provider_id = e.id
             WHERE sd.sale_id = $1
             """,
             order_id

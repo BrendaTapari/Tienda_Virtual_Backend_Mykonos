@@ -121,8 +121,7 @@ origins = [
     "http://localhost:5173",
     "https://fastapi.mykonosboutique.com.ar",
     "https://api.mykonosboutique.com.ar",
-    "https://mykonosboutique.com.ar",
-    "*"
+    "https://mykonosboutique.com.ar"
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -208,6 +207,18 @@ if os.path.exists(promotions_dir):
     logger.info(f"Mounted static promotions directory: {promotions_dir}")
 else:
     logger.warning(f"Promotions directory not found: {promotions_dir}")
+
+# Mount static files directory for general assets (Logo, etc)
+assets_dir = "/home/breightend/Tienda_Virtual_Backend_Mykonos/images"
+if os.path.exists(assets_dir):
+    app.mount(
+        "/static/assets",
+        StaticFiles(directory=assets_dir),
+        name="assets"
+    )
+    logger.info(f"Mounted static assets directory: {assets_dir}")
+else:
+    logger.warning(f"Assets directory not found: {assets_dir}")
 
 
 @app.get("/health")

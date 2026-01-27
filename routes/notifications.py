@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, BackgroundTasks
 from typing import List, Optional
 from datetime import datetime, timedelta
 from config.db_connection import db
@@ -12,12 +12,38 @@ from models.notification_models import (
     NotificationImageUpload
 )
 from utils.auth import get_current_web_user, require_admin
+from utils.email import send_broadcast_email
 import logging
 import base64
 import os
 import uuid
 
 logger = logging.getLogger(__name__)
+
+async def dispatch_broadcast_email(target_role: str, title: str, message: str, image_url: str = None, link_url: str = None):
+    """
+    Helper to fetch users and dispatch broadcast emails.
+    """
+    try:
+        # Determine query based on role
+        if target_role == 'all':
+            query = "SELECT email FROM web_users WHERE email_verified = TRUE AND status = 'active'"
+            args = []
+        else:
+            query = "SELECT email FROM web_users WHERE role = $1 AND email_verified = TRUE AND status = 'active'"
+            args = [target_role]
+            
+        users = await db.fetch_all(query, *args)
+        recipients = [u['email'] for u in users if u['email']]
+        
+        if recipients:
+            logger.info(f"Dispatching broadcast email to {len(recipients)} users (Role: {target_role})")
+            await send_broadcast_email(recipients, title, message, image_url, link_url)
+        else:
+            logger.info(f"No recipients found for broadcast (Role: {target_role})")
+            
+    except Exception as e:
+        logger.error(f"Error dispatching broadcast emails: {e}")
 
 router = APIRouter()
 
@@ -229,7 +255,7 @@ async def create_notification(notification: NotificationCreate): # Authenticated
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/broadcasts", response_model=BroadcastNotificationResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
-async def create_broadcast(broadcast: BroadcastNotificationCreate):
+async def create_broadcast(broadcast: BroadcastNotificationCreate, background_tasks: BackgroundTasks):
     """
     Internal/Admin: Create a broadcast notification.
     """
@@ -250,6 +276,16 @@ async def create_broadcast(broadcast: BroadcastNotificationCreate):
             broadcast.active
         )
         
+        if broadcast.active:
+            background_tasks.add_task(
+                dispatch_broadcast_email,
+                broadcast.target_role,
+                broadcast.title,
+                broadcast.message,
+                broadcast.image_url,
+                broadcast.link_url
+            )
+            
         return BroadcastNotificationResponse(**row)
         
     except Exception as e:
@@ -257,7 +293,7 @@ async def create_broadcast(broadcast: BroadcastNotificationCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/broadcasts/{broadcast_id}", response_model=BroadcastNotificationResponse, dependencies=[Depends(require_admin)])
-async def update_broadcast(broadcast_id: int, broadcast: BroadcastNotificationCreate):
+async def update_broadcast(broadcast_id: int, broadcast: BroadcastNotificationCreate, background_tasks: BackgroundTasks):
     """
     Internal/Admin: Edit a broadcast notification (draft or active).
     """
@@ -298,6 +334,17 @@ async def update_broadcast(broadcast_id: int, broadcast: BroadcastNotificationCr
             broadcast_id
         )
         
+        # If updated to active, send email
+        if broadcast.active:
+             background_tasks.add_task(
+                dispatch_broadcast_email,
+                broadcast.target_role,
+                broadcast.title,
+                broadcast.message,
+                broadcast.image_url,
+                broadcast.link_url
+            )
+            
         return BroadcastNotificationResponse(**row)
         
     except HTTPException:
@@ -340,7 +387,7 @@ async def upload_promotion_image(image: NotificationImageUpload, current_user: d
             f.write(decoded_image)
             
         # URL publica para acceder a la imagen
-        image_url = f"https://api.mykonosboutique.com.ar/static/promociones/{filename}"
+        image_url = f"https://fastapi.mykonosboutique.com.ar/static/promociones/{filename}"
         
         return {"image_url": image_url}
         

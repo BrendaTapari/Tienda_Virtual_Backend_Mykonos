@@ -14,7 +14,14 @@ class UserRegister(BaseModel):
     email: EmailStr = Field(..., description="Email address")
     password: str = Field(..., min_length=6, description="Password (min 6 characters)")
     phone: Optional[str] = Field(None, max_length=20, description="Phone number")
-    domicilio: Optional[str] = Field(None, max_length=200, description="Address")
+    domicilio: Optional[str] = Field(None, max_length=200, description="Address (Legacy)")
+    provincia: Optional[str] = Field(None, description="Province")
+    ciudad: Optional[str] = Field(None, description="City")
+    calle: Optional[str] = Field(None, description="Street")
+    numero: Optional[str] = Field(None, description="Number")
+    piso: Optional[str] = Field(None, description="Floor")
+    departamento: Optional[str] = Field(None, description="Apartment")
+    codigo_postal: Optional[str] = Field(None, description="Zip Code")
     cuit: Optional[str] = Field(None, min_length=11, max_length=11, description="CUIT (11 digits)")
 
     class Config:
@@ -23,7 +30,9 @@ class UserRegister(BaseModel):
                 "username": "juanperez",
                 "fullname": "Juan Pérez",
                 "email": "juan@example.com",
-                "password": "securepass123"
+                "password": "securepass123",
+                "provincia": "Buenos Aires",
+                "ciudad": "CABA"
             }
         }
 
@@ -50,6 +59,13 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     domicilio: Optional[str] = None
+    provincia: Optional[str] = None
+    ciudad: Optional[str] = None
+    calle: Optional[str] = None
+    numero: Optional[str] = None
+    piso: Optional[str] = None
+    departamento: Optional[str] = None
+    codigo_postal: Optional[str] = None
     cuit: Optional[str] = None
     role: str = "customer"
     status: str = "active"
@@ -101,6 +117,14 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = Field(None, max_length=20)
     domicilio: Optional[str] = Field(None, max_length=200)
+    provincia: Optional[str] = Field(None, description="Province")
+    ciudad: Optional[str] = Field(None, description="City")
+    calle: Optional[str] = Field(None, description="Street")
+    numero: Optional[str] = Field(None, description="Number")
+    piso: Optional[str] = Field(None, description="Floor")
+    departamento: Optional[str] = Field(None, description="Apartment")
+    codigo_postal: Optional[str] = Field(None, description="Zip Code")
+    cuit: Optional[str] = Field(None, min_length=11, max_length=11)
     profile_image_url: Optional[str] = None
 
     class Config:
@@ -147,6 +171,32 @@ class ResendVerification(BaseModel):
         json_schema_extra = {
             "example": {
                 "email": "juan@example.com"
+            }
+        }
+
+
+class PasswordResetRequest(BaseModel):
+    """Model for requesting a password reset email."""
+    email: EmailStr = Field(..., description="Email address associated with the account")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "juan@example.com"
+            }
+        }
+
+
+class PasswordResetConfirm(BaseModel):
+    """Model for confirming password reset with new password."""
+    token: str = Field(..., description="Reset token from email")
+    new_password: str = Field(..., min_length=6, description="New password (min 6 characters)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "token": "reset-token-123",
+                "new_password": "newsecurepass"
             }
         }
 
