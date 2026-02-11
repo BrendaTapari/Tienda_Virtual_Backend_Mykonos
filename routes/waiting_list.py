@@ -198,3 +198,33 @@ async def delete_waiting_list_request(request_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al eliminar la solicitud: {str(e)}"
         )
+
+
+@router.patch("/{request_id}", dependencies=[Depends(require_admin)])
+@router.put("/{request_id}", dependencies=[Depends(require_admin)])
+async def mark_as_notified(request_id: int):
+    """
+    Mark a waiting list request as notified (Admin only).
+    Accepts both PATCH and PUT methods.
+    """
+    try:
+        # Check if exists
+        exists = await db.fetch_val("SELECT id FROM lista_espera WHERE id = $1", request_id)
+        if not exists:
+            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+        # Update notificado to true
+        await db.execute(
+            "UPDATE lista_espera SET notificado = true WHERE id = $1", 
+            request_id
+        )
+        
+        return {"message": "Solicitud marcada como notificada", "id": request_id, "notificado": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking waiting list request as notified: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al marcar como notificado: {str(e)}"
+        )
