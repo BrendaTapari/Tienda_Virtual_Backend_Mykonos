@@ -85,10 +85,15 @@ async def create_waiting_list_request(request: WaitingListCreate):
         )
 
 @router.get("/", response_model=List[WaitingListResponse], dependencies=[Depends(require_admin)])
-async def get_waiting_list(producto: Optional[str] = None):
+async def get_waiting_list(
+    producto: Optional[str] = None,
+    notificado: Optional[str] = Query(None, description="Filter by notification status: 'all', 'pending', 'notified'")
+):
     """
     Get all waiting list requests (Admin only).
-    Optional filter by product name (partial match).
+    Optional filters:
+    - producto: partial match on product name
+    - notificado: 'all' (default), 'pending' (false), 'notified' (true)
     """
     try:
         # Updated query to include relational data using JSON aggregation
@@ -124,10 +129,50 @@ async def get_waiting_list(producto: Optional[str] = None):
             FROM lista_espera le
         """
         
+        # Build WHERE clause dynamically
+        where_conditions = []
         args = []
+        arg_counter = 1
+        
+        # Log incoming parameters for debugging
+        logger.info(f"get_waiting_list called with producto={producto}, notificado={notificado}")
+        
         if producto:
-            query += " WHERE le.producto_buscado ILIKE $1"
+            where_conditions.append(f"le.producto_buscado ILIKE ${arg_counter}")
             args.append(f"%{producto}%")
+            arg_counter += 1
+        
+        # Filter by notification status
+        # Normalize the value and handle empty strings
+        # Accept both: "pending"/"notified"/"all" AND "true"/"false"
+        if notificado and notificado.strip():
+            notificado_lower = notificado.strip().lower()
+            
+            # Map values to boolean
+            filter_value = None
+            if notificado_lower in ["pending", "false"]:
+                filter_value = False
+                logger.info(f"Adding filter: notificado = False (from value '{notificado}')")
+            elif notificado_lower in ["notified", "true"]:
+                filter_value = True
+                logger.info(f"Adding filter: notificado = True (from value '{notificado}')")
+            elif notificado_lower == "all":
+                logger.info(f"No filter applied: showing all entries")
+            else:
+                logger.warning(f"Invalid notificado value: '{notificado}'. Expected: 'all'/'pending'/'notified' or 'true'/'false'")
+            
+            # Add filter if we have a valid value
+            if filter_value is not None:
+                where_conditions.append(f"le.notificado = ${arg_counter}")
+                args.append(filter_value)
+                arg_counter += 1
+        
+        # Add WHERE clause if there are conditions
+        if where_conditions:
+            query += " WHERE " + " AND ".join(where_conditions)
+        
+        logger.info(f"Final query conditions: {where_conditions}")
+        logger.info(f"Query args: {args}")
             
         query += " ORDER BY le.created_at DESC"
         
@@ -153,6 +198,7 @@ async def get_waiting_list(producto: Optional[str] = None):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener la lista de espera: {str(e)}"
         )
+
 
 @router.get("/stats", response_model=List[WaitingListStats], dependencies=[Depends(require_admin)])
 async def get_waiting_list_stats():
