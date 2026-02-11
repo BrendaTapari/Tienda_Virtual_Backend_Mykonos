@@ -5,16 +5,42 @@ from datetime import datetime
 
 class BranchResponse(BaseModel):
     id: int
-    name: str
-    address: Optional[str] = None
+    sucursal: str
+    direccion: Optional[str] = None
     postal_code: Optional[str] = None
-    phone_number: Optional[str] = None
+    telefono: Optional[str] = None
     area: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    maps_link: Optional[str] = None
+    horarios: Optional[str] = None
+    instagram: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class BranchCreate(BaseModel):
+    sucursal: str
+    direccion: Optional[str] = None
+    maps_link: Optional[str] = None
+    horarios: Optional[str] = None
+    telefono: Optional[str] = None
+    instagram: Optional[str] = None
+    postal_code: Optional[str] = None
+    area: Optional[str] = None
+    description: Optional[str] = None
+
+class BranchUpdate(BaseModel):
+    sucursal: Optional[str] = None
+    direccion: Optional[str] = None
+    maps_link: Optional[str] = None
+    horarios: Optional[str] = None
+    telefono: Optional[str] = None
+    instagram: Optional[str] = None
+    postal_code: Optional[str] = None
+    area: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
 
 class VariantStock(BaseModel):
     variant_id: int

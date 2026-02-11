@@ -167,6 +167,10 @@ app.include_router(nave_payments.router, prefix="/api/nave", tags=["Pagos Nave"]
 from routes import payment_webhooks
 app.include_router(payment_webhooks.router, prefix="/api/payments", tags=["Webhooks Pagos"])
 
+# Import and include waiting list router
+from routes import waiting_list
+app.include_router(waiting_list.router, prefix="/waiting-list", tags=["Lista de Espera"])
+
 # Mount static files directory for product images
 # Using shared directory that multiple backends access
 images_dir = "/home/breightend/imagenes-productos"

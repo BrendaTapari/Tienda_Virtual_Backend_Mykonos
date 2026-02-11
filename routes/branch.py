@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from config.db_connection import db
-from models.branch_models import BranchResponse, BranchWithStock
+from models.branch_models import BranchResponse, BranchWithStock, BranchCreate, BranchUpdate
 from utils.auth import require_admin
 import logging
 
@@ -13,7 +13,22 @@ router = APIRouter()
 async def get_all_branches():
     try:
         # The table name is 'storage' as per TABLES.STORAGE definition in database.py
-        branches = await db.fetch_all("SELECT * FROM storage")
+        # Selecting columns matching BranchResponse
+        branches = await db.fetch_all("""
+            SELECT 
+                id, 
+                sucursal, 
+                direccion, 
+                postal_code, 
+                telefono, 
+                area, 
+                description, 
+                status,
+                maps_link,
+                horarios,
+                instagram
+            FROM storage
+        """)
         return branches
     except Exception as e:
         logger.error(f"Error fetching all branches (admin): {e}")
@@ -21,7 +36,132 @@ async def get_all_branches():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener todas las sucursales: {str(e)}"
         )
-    
+
+@router.post("/", response_model=BranchResponse, dependencies=[Depends(require_admin)])
+async def create_branch(branch: BranchCreate):
+    try:
+        query = """
+            INSERT INTO storage (sucursal, direccion, maps_link, horarios, telefono, instagram, postal_code, area, description)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, sucursal, direccion, postal_code, telefono, area, description, status, maps_link, horarios, instagram
+        """
+        new_branch = await db.fetch_one(
+            query, 
+            branch.sucursal, 
+            branch.direccion, 
+            branch.maps_link, 
+            branch.horarios, 
+            branch.telefono, 
+            branch.instagram,
+            branch.postal_code,
+            branch.area,
+            branch.description
+        )
+        return dict(new_branch)
+    except Exception as e:
+        logger.error(f"Error creating branch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al crear la sucursal: {str(e)}"
+        )
+
+@router.put("/{branch_id}", response_model=BranchResponse, dependencies=[Depends(require_admin)])
+async def update_branch(branch_id: int, branch: BranchUpdate):
+    try:
+        # Check if branch exists
+        existing = await db.fetch_one("SELECT id FROM storage WHERE id = $1", branch_id)
+        if not existing:
+             raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+
+        # Build query dynamically based on provided fields
+        update_fields = []
+        values = []
+        param_index = 1
+        
+        if branch.sucursal is not None:
+            update_fields.append(f"sucursal = ${param_index}")
+            values.append(branch.sucursal)
+            param_index += 1
+        if branch.direccion is not None:
+            update_fields.append(f"direccion = ${param_index}")
+            values.append(branch.direccion)
+            param_index += 1
+        if branch.maps_link is not None:
+            update_fields.append(f"maps_link = ${param_index}")
+            values.append(branch.maps_link)
+            param_index += 1
+        if branch.horarios is not None:
+            update_fields.append(f"horarios = ${param_index}")
+            values.append(branch.horarios)
+            param_index += 1
+        if branch.telefono is not None:
+            update_fields.append(f"telefono = ${param_index}")
+            values.append(branch.telefono)
+            param_index += 1
+        if branch.instagram is not None:
+            update_fields.append(f"instagram = ${param_index}")
+            values.append(branch.instagram)
+            param_index += 1
+        if branch.postal_code is not None:
+            update_fields.append(f"postal_code = ${param_index}")
+            values.append(branch.postal_code)
+            param_index += 1
+        if branch.area is not None:
+            update_fields.append(f"area = ${param_index}")
+            values.append(branch.area)
+            param_index += 1
+        if branch.description is not None:
+            update_fields.append(f"description = ${param_index}")
+            values.append(branch.description)
+            param_index += 1
+        if branch.status is not None:
+            update_fields.append(f"status = ${param_index}")
+            values.append(branch.status)
+            param_index += 1
+            
+        if not update_fields:
+            # No updates provided, return existing
+            return await db.fetch_one("SELECT * FROM storage WHERE id = $1", branch_id)
+            
+        values.append(branch_id)
+        query = f"""
+            UPDATE storage 
+            SET {', '.join(update_fields)}
+            WHERE id = ${param_index}
+            RETURNING id, sucursal, direccion, postal_code, telefono, area, description, status, maps_link, horarios, instagram
+        """
+        
+        updated_branch = await db.fetch_one(query, *values)
+        return dict(updated_branch)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating branch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar la sucursal: {str(e)}"
+        )
+
+@router.delete("/{branch_id}", dependencies=[Depends(require_admin)])
+async def delete_branch(branch_id: int):
+    try:
+        # Check if branch exists
+        existing = await db.fetch_one("SELECT id FROM storage WHERE id = $1", branch_id)
+        if not existing:
+             raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+             
+        await db.execute("DELETE FROM storage WHERE id = $1", branch_id)
+        return {"message": "Sucursal eliminada exitosamente"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting branch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al eliminar la sucursal: {str(e)}"
+        )
 
 @router.get("/productsVariantsByBranch/{product_id}", response_model=List[BranchWithStock], dependencies=[Depends(require_admin)])
 async def get_products_variants_by_branch(product_id: int):
@@ -57,7 +197,7 @@ async def get_products_variants_by_branch(product_id: int):
             query = """
                 SELECT 
                     s.id as branch_id,
-                    s.name as branch_name,
+                    s.sucursal as branch_name,
                     wv.id as variant_id,
                     sz.size_name as size,
                     c.color_name as color,
@@ -169,7 +309,7 @@ async def get_web_products_variants_by_branch(product_id: int, branch_id: int):
     try:
         async with await db.transaction() as conn:
             # Check if branch exists
-            branch_name = await conn.fetchval("SELECT name FROM storage WHERE id = $1", branch_id)
+            branch_name = await conn.fetchval("SELECT sucursal FROM storage WHERE id = $1", branch_id)
             if not branch_name:
                  raise HTTPException(status_code=404, detail="Sucursal no encontrada")
 

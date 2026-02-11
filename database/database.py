@@ -48,6 +48,9 @@ class TABLES(Enum):
     NOTIFICATIONS = "notifications"
     BROADCAST_NOTIFICATIONS = "broadcast_notifications"
     USER_BROADCASTS = "user_broadcasts"
+    WAITING_LIST = "lista_espera"
+    WAITING_LIST_SIZES = "lista_espera_talles"
+    WAITING_LIST_COLORS = "lista_espera_colores"
 
 
 DATABASE_TABLES = {
@@ -277,14 +280,17 @@ DATABASE_TABLES = {
     TABLES.STORAGE: {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único para cada almacenamiento, se incrementa automáticamente.
-            "name": "TEXT NOT NULL",  # Nombre del almacenamiento, requerido.
-            "address": "TEXT",  # Dirección del almacenamiento.
+            "sucursal": "TEXT NOT NULL",  # Nombre del almacenamiento (antes "name").
+            "direccion": "TEXT",  # Dirección del almacenamiento (antes "address").
             "postal_code": "TEXT",  # Código postal del almacenamiento.
-            "phone_number": "TEXT",  # Número de teléfono del almacenamiento.
+            "telefono": "TEXT",  # Número de teléfono del almacenamiento (antes "phone_number").
             "area": "TEXT",  # Área o sección dentro del almacenamiento.
-            "description": "TEXT",  # Área o sección dentro del almacenamiento.
-            "created_at": "TEXT DEFAULT (datetime('now','localtime'))",  # Fecha de creación del registro, se establece por defecto a la fecha y hora actuales.
-            "status": "TEXT DEFAULT 'Activo'",  # Estado del almacenamiento (activo, inactivo, etc.).
+            "description": "TEXT",  # Descripción opcional.
+            "created_at": "TEXT DEFAULT (datetime('now','localtime'))",  # Fecha de creación.
+            "status": "TEXT DEFAULT 'Activo'",  # Estado del almacenamiento.
+            "maps_link": "TEXT", # Link de Google Maps
+            "horarios": "TEXT", # Horarios de atención
+            "instagram": "TEXT", # Instagram handle
         }
     },
     TABLES.PRODUCTS: {
@@ -989,7 +995,86 @@ DATABASE_TABLES = {
             },
         ],
         # constraint para evitar duplicados de variantes en la web
-        "constraints": ["UNIQUE(product_id, size_id, color_id)"] 
+        "constraints": ["UNIQUE(product_id, size_id, color_id)"]
+    },
+    TABLES.STORAGE: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "sucursal": "TEXT NOT NULL",
+            "direccion": "TEXT",
+            "postal_code": "TEXT",
+            "telefono": "TEXT",
+            "area": "TEXT",
+            "description": "TEXT",
+            "created_at": "TEXT DEFAULT (datetime('now','localtime'))",
+            "status": "TEXT DEFAULT 'Activo'",
+            "maps_link": "TEXT",
+            "horarios": "TEXT",
+            "instagram": "TEXT",
+        }
+    },
+    TABLES.WAITING_LIST: {
+        "table_name": "lista_espera",
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "product_id": "INTEGER NOT NULL",
+            "codigo_barra_variante": "TEXT",
+            "producto_buscado": "TEXT NOT NULL",
+            "celular_cliente": "TEXT NOT NULL",
+            "nombre_cliente": "TEXT",
+            # Se mantienen por compatibilidad/fallback, pero ahora se usan las tablas relacionales
+            "talle_buscado": "TEXT DEFAULT 'Indistinto'", 
+            "color_buscado": "TEXT DEFAULT 'Indistinto'",
+            "sucursal_referencia": "TEXT",
+            "notificado": "BOOLEAN DEFAULT 0",
+            "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP"
+        }
+    },
+    TABLES.WAITING_LIST_SIZES: {
+        "table_name": "lista_espera_talles",
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "waiting_list_id": "INTEGER NOT NULL",
+            "size_id": "INTEGER NOT NULL",
+        },
+        "foreign_keys": [
+            {
+                "column": "waiting_list_id",
+                "reference_table": TABLES.WAITING_LIST,
+                "reference_column": "id",
+                "export_column_name": "id",
+            },
+            {
+                "column": "size_id",
+                "reference_table": TABLES.SIZES,
+                "reference_column": "id",
+                "export_column_name": "size_name",
+            },
+        ],
+        "constraints": ["UNIQUE(waiting_list_id, size_id)"]
+    },
+    TABLES.WAITING_LIST_COLORS: {
+        "table_name": "lista_espera_colores",
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "waiting_list_id": "INTEGER NOT NULL",
+            "color_id": "INTEGER NOT NULL",
+        },
+        "foreign_keys": [
+            {
+                "column": "waiting_list_id",
+                "reference_table": TABLES.WAITING_LIST,
+                "reference_column": "id",
+                "export_column_name": "id",
+            },
+            {
+                "column": "color_id",
+                "reference_table": TABLES.COLORS,
+                "reference_column": "id",
+                "export_column_name": "color_name",
+            },
+        ],
+        "constraints": ["UNIQUE(waiting_list_id, color_id)"]
     },
     TABLES.DISCOUNTS: {
         "columns": {
