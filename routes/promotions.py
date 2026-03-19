@@ -175,19 +175,11 @@ async def toggle_promotion_active(promotion_id: int):
         query = """
             UPDATE promotions
             SET is_active = $1, updated_at = CURRENT_TIMESTAMP
-            RETURNING id, title, subtitle, icon, is_active, display_order, created_at, updated_at
-        """
-        
-        updated_promo = await db.fetch_one(query, new_status) # ERROR: forgot ID in WHERE clause
-        
-        # FIX: The query above is missing WHERE id = $2, correct it now.
-        query_fix = """
-            UPDATE promotions
-            SET is_active = $1, updated_at = CURRENT_TIMESTAMP
             WHERE id = $2
             RETURNING id, title, subtitle, icon, is_active, display_order, created_at, updated_at
         """
-        updated_promo = await db.fetch_one(query_fix, new_status, promotion_id)
+        
+        updated_promo = await db.fetch_one(query, new_status, promotion_id)
         
         return updated_promo
     except HTTPException:
