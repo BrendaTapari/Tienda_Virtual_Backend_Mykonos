@@ -1361,6 +1361,88 @@ async def get_productos_by_group(groupName: str):
         )
 
 
+@router.get("/search", response_model=List[OnlineStoreProduct])
+async def search_products_online(nombre_web: str = Query(..., description="Término de búsqueda (por nombre web)")):
+    """
+    Busca productos en la tienda online por su nombre web.
+    Solo retorna productos con en_tienda_online = TRUE.
+    """
+    try:
+        search_term = f"%{nombre_web.strip()}%"
+        
+        query = """
+            SELECT 
+                p.id,
+                p.nombre_web,
+                p.descripcion_web,
+                p.precio_web,
+                p.slug,
+                COALESCE(g.group_name, 'Sin categoría') as category,
+                COALESCE(
+                    (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
+                    ARRAY[]::TEXT[]
+                ) as images,
+                COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
+                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
+                e.entity_name as provider
+            FROM products p
+            LEFT JOIN groups g ON p.group_id = g.id
+            LEFT JOIN entities e ON p.provider_id = e.id
+            LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
+            LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
+            WHERE p.en_tienda_online = TRUE AND p.nombre_web ILIKE $1
+            GROUP BY p.id, g.group_name, e.entity_name
+            ORDER BY p.id DESC
+        """
+        
+        products = await db.fetch_all(query, search_term)
+        
+        result = []
+        for product in products:
+            product_dict = dict(product)
+            
+            # Obtener variantes para este producto
+            variants_query = """
+                SELECT 
+                    wsv.id as variant_id,
+                    sz.size_name as talle,
+                    c.color_name as color,
+                    c.color_hex,
+                    wsv.quantity as stock,
+                    wsv.variant_barcode as barcode
+                FROM warehouse_stock_variants wsv
+                LEFT JOIN sizes sz ON wsv.size_id = sz.id
+                LEFT JOIN colors c ON wsv.color_id = c.id
+                WHERE wsv.product_id = $1 AND wsv.quantity > 0
+                ORDER BY sz.size_name, c.color_name
+            """
+            variants = await db.fetch_all(variants_query, product['id'])
+            
+            product_dict['variantes'] = [
+                {
+                    "variant_id": v['variant_id'],
+                    "talle": v['talle'],
+                    "color": v['color'],
+                    "color_hex": v['color_hex'],
+                    "stock": v['stock'],
+                    "barcode": v['barcode']
+                } 
+                for v in variants
+            ]
+            
+            result.append(product_dict)
+            
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error buscando productos online con término '{nombre_web}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al buscar productos: {str(e)}"
+        )
+
 @router.get("/{product_id}", response_model=OnlineStoreProduct)
 async def get_product(
     product_id: int,
@@ -1368,9 +1450,6 @@ async def get_product(
 ):
     try:
         # --- 1. DATOS PRINCIPALES DEL PRODUCTO ---
-        # Usamos la misma lógica del listado: si hay sucursal, miramos stock físico global para el total, 
-        # si no, miramos stock web manual.
-        
         if branch_id is None:
             # Modo Web
             query_product = """
