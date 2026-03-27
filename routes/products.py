@@ -90,11 +90,23 @@ async def get_all_products_admin(
         where_added = False
         
         if barcode:
-            # Specific barcode search (exact/trimmed)
-            query += " LEFT JOIN warehouse_stock_variants wsv_b ON wsv_b.product_id = p.id"
-            query += " WHERE TRIM(wsv_b.variant_barcode) ILIKE $1"
-            params.append(barcode.strip())
-            where_added = True
+            barcode_clean = barcode.strip().replace(" ", "")
+            # Detección de EAN-13 dinámico (20PPPPSSSCCC)
+            if barcode_clean.isdigit() and len(barcode_clean) in [12, 13] and barcode_clean.startswith("20"):
+                try:
+                    product_id_from_barcode = int(barcode_clean[2:6])
+                    query += f" WHERE p.id = ${len(params) + 1}"
+                    params.append(product_id_from_barcode)
+                    where_added = True
+                except (ValueError, IndexError):
+                    barcode = None # Fallback to legacy below if needed
+            
+            if not where_added:
+                # Búsqueda legacy: buscar coincidencia exacta en variant_barcode
+                query += " LEFT JOIN warehouse_stock_variants wsv_b ON wsv_b.product_id = p.id"
+                query += f" WHERE TRIM(wsv_b.variant_barcode) ILIKE ${len(params) + 1}"
+                params.append(barcode.strip())
+                where_added = True
             
         if provider_code:
             prefix = " AND " if where_added else " WHERE "
@@ -104,12 +116,24 @@ async def get_all_products_admin(
             where_added = True
 
         if search:
-            # General search across multiple fields
-            query += " LEFT JOIN warehouse_stock_variants wsv_search ON wsv_search.product_id = p.id"
-            prefix = " AND " if where_added else " WHERE "
-            query += f"{prefix} (p.product_name ILIKE ${len(params) + 1} OR p.description ILIKE ${len(params) + 1} OR p.provider_code ILIKE ${len(params) + 1} OR TRIM(wsv_search.variant_barcode) ILIKE ${len(params) + 1})"
-            params.append(f"%{search}%")
-            where_added = True
+            search_clean = search.strip().replace(" ", "")
+            # También soportar EAN-13 dinámico en la caja de búsqueda general
+            if search_clean.isdigit() and len(search_clean) in [12, 13] and search_clean.startswith("20"):
+                try:
+                    product_id_from_search = int(search_clean[2:6])
+                    prefix = " AND " if where_added else " WHERE "
+                    query += f"{prefix} p.id = ${len(params) + 1}"
+                    params.append(product_id_from_search)
+                    where_added = True
+                except:
+                    pass
+            else:
+                # Búsqueda general por texto
+                query += " LEFT JOIN warehouse_stock_variants wsv_search ON wsv_search.product_id = p.id"
+                prefix = " AND " if where_added else " WHERE "
+                query += f"{prefix} (p.product_name ILIKE ${len(params) + 1} OR p.description ILIKE ${len(params) + 1} OR p.provider_code ILIKE ${len(params) + 1} OR TRIM(wsv_search.variant_barcode) ILIKE ${len(params) + 1})"
+                params.append(f"%{search}%")
+                where_added = True
             
         if group_id:
             prefix = " AND " if where_added else " WHERE "

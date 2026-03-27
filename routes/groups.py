@@ -3,7 +3,7 @@ Groups API routes - handles all group-related endpoints.
 Uses PostgreSQL database for data persistence.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from typing import List
 from config.db_connection import db
 from models.group_models import GroupResponse, GroupWithChildren
@@ -79,7 +79,9 @@ async def get_root_groups():
 
 
 @router.get("/hierarchy", response_model=List[GroupWithChildren])
-async def get_groups_hierarchy():
+async def get_groups_hierarchy(
+    web_only: bool = Query(True, description="Filter to only include groups with online products")
+):
     """
     Get groups organized in a hierarchical structure.
     Returns root groups with their nested children.
@@ -117,6 +119,41 @@ async def get_groups_hierarchy():
                 parent = groups_dict[group['parent_group_id']]
                 parent['children'].append(group)
         
+        # Filter for web_only
+        if web_only:
+            # Fetch groups that have products with en_tienda_online = TRUE
+            valid_groups_query = """
+                SELECT DISTINCT group_id 
+                FROM products 
+                WHERE en_tienda_online = TRUE AND group_id IS NOT NULL
+            """
+            valid_groups_records = await db.fetch_all(valid_groups_query)
+            valid_groups_set = {g['group_id'] for g in valid_groups_records}
+            
+            def is_valid(group):
+                # Always valid child groups so we can prune empty ones
+                valid_children = []
+                for child in group['children']:
+                    if is_valid(child):
+                        valid_children.append(child)
+                        
+                # Keep only valid children
+                group['children'] = valid_children
+                
+                # Valid if the group itself has online products or it has valid children
+                if group['id'] in valid_groups_set:
+                    return True
+                
+                return len(valid_children) > 0
+
+            # Filter root_groups
+            valid_root_groups = []
+            for root in root_groups:
+                if is_valid(root):
+                    valid_root_groups.append(root)
+            
+            root_groups = valid_root_groups
+            
         return root_groups
         
     except Exception as e:

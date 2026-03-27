@@ -18,6 +18,34 @@ router = APIRouter()
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://mykonosboutique.com.ar")
 RESERVATION_MINUTES = 30
 
+async def get_shipping_config(conn) -> dict:
+    """Obtiene la política de envío activa de la BD."""
+    row = await conn.fetchrow("SELECT * FROM shipping_config WHERE id = 1")
+    # Sin fallback hardcodeado: si no existe la fila, usamos threshold con umbral 0
+    # (se le cobra envío siempre hasta que el admin configure la tabla)
+    if not row:
+        return {"policy": "threshold", "free_threshold": 0, "provider_name": "Correo Argentino"}
+    return dict(row)
+
+def calculate_shipping_cost(api_cost: float, subtotal: float, config: dict) -> float:
+    """
+    Determina el costo de envío que se le cobra al cliente.
+    api_cost: costo real calculado por la API del Correo (viene del frontend).
+    - always_free  → 0
+    - always_paid  → api_cost completo
+    - split        → api_cost / 2
+    - threshold    → 0 si subtotal >= free_threshold, si no api_cost completo
+    """
+    policy = config["policy"]
+    if policy == "always_free":
+        return 0.0
+    elif policy == "always_paid":
+        return float(api_cost)
+    elif policy == "split":
+        return round(float(api_cost) / 2, 2)
+    else:  # threshold
+        return 0.0 if float(subtotal) >= float(config["free_threshold"]) else float(api_cost)
+
 
 async def get_user_by_token(token: str):
     """Get user by session token."""
@@ -451,12 +479,20 @@ async def _create_order_impl(
                     )
             
             # Calculate totals
-            # Enforce free shipping for store pickup
-            final_shipping_cost = order_data.shipping_cost
+            subtotal = sum(float(item['unit_price']) * item['quantity'] for item in cart_items)
+            
+            # Enforce free shipping for store pickup, else calculate based on policy
             if order_data.delivery_type == 'retiro':
                 final_shipping_cost = 0.0
+            else:
+                # Aplicar política sobre el costo real de la API del Correo
+                shipping_cfg = await get_shipping_config(conn)
+                final_shipping_cost = calculate_shipping_cost(
+                    api_cost=order_data.shipping_cost,  # viene del Correo via frontend
+                    subtotal=subtotal,
+                    config=shipping_cfg
+                )
             
-            subtotal = sum(float(item['unit_price']) * item['quantity'] for item in cart_items)
             total = subtotal + final_shipping_cost
             
             # Calculate expiration time
@@ -519,7 +555,7 @@ async def _create_order_impl(
                 'web',
                 shipping_address,
                 'pendiente',
-                order_data.shipping_cost,
+                final_shipping_cost,
                 order_data.delivery_type,
                 order_data.notes,
                 reservation_expires_at,
@@ -640,7 +676,7 @@ async def _create_order_impl(
                 'sale_date': sale['sale_date'].isoformat() if hasattr(sale['sale_date'], 'isoformat') else str(sale['sale_date']),
                 'subtotal': float(subtotal),
                 'total': float(total),
-                'shipping_cost': float(order_data.shipping_cost),
+                'shipping_cost': float(final_shipping_cost),
                 'status': sale['status'],
                 'shipping_status': sale['shipping_status'],
                 'shipping_address': shipping_address,

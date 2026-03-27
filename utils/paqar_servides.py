@@ -23,10 +23,11 @@ import logging
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from datetime import datetime, timedelta
 
 import httpx
 from dotenv import load_dotenv
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 load_dotenv()
 
@@ -37,8 +38,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PAQAR_BASE_URLS: Dict[str, str] = {
-    "production": "https://api.correoargentino.com.ar/paqar/v1",
-    "test":       "https://apitest.correoargentino.com.ar/paqar/v1",
+    "production": "https://api.correoargentino.com.ar/micorreo/v1",
+    "test":       "https://apitest.correoargentino.com.ar/micorreo/v1",
 }
 
 
@@ -365,54 +366,70 @@ class LabelResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DTOs para Cotizar Envíos  (POST /rates)
+# ---------------------------------------------------------------------------
+
+class DimensionsDTO(BaseModel):
+    """Dimensiones y peso del envío para cotización."""
+    weight: int  # gramos
+    height: int  # cm
+    width:  int  # cm
+    length: int  # cm
+
+    @field_validator("weight", "height", "width", "length")
+    @classmethod
+    def validate_positive_integer(cls, v: int, info) -> int: # noqa: ANN001
+        if v <= 0:
+            raise ValueError(f"El valor de '{info.field_name}' debe ser mayor a 0.")
+        return v
+
+class RateRequestDTO(BaseModel):
+    """Payload para POST /rates."""
+    customerId:            str
+    postalCodeOrigin:      str
+    postalCodeDestination: str
+    deliveredType:         Literal["D", "S"]
+    dimensions:            DimensionsDTO
+
+
+# ---------------------------------------------------------------------------
 # Cliente HTTP base
 # ---------------------------------------------------------------------------
 
 class PaqarClient:
     """
-    Cliente HTTP asíncrono para la API v2.0 de Paq.ar (Correo Argentino).
+    Cliente HTTP asíncrono para la API v2.0 de MiCorreo (Correo Argentino).
 
     Gestiona:
-    - Headers obligatorios (Authorization y agreement) en TODAS las peticiones.
+    - Autenticación HTTP Basic Auth a /token y cache en memoria del Bearer JWT.
+    - Renovación automática de token ante expiración explícita o errores 401.
     - Elección de entorno (producción / test) vía variable PAQAR_ENV.
     - Timeout configurable.
     - Manejo centralizado de errores HTTP.
-
-    Uso básico (dentro de un endpoint FastAPI):
-        async with PaqarClient() as client:
-            tracking = await client.create_order(order_dto)
-
-    Uso con instancia reutilizable:
-        client = PaqarClient()
-        await client.open()
-        ...
-        await client.close()
     """
 
     DEFAULT_TIMEOUT = 30.0  # segundos
+    _token_cache: Optional[str] = None
+    _token_expires_at: Optional[datetime] = None
 
     def __init__(
         self,
-        api_key:      Optional[str] = None,
-        agreement_id: Optional[str] = None,
+        username:     Optional[str] = None,
+        password:     Optional[str] = None,
         timeout:      float = DEFAULT_TIMEOUT,
     ) -> None:
-        self._api_key      = api_key      or os.getenv("PAQAR_API_KEY", "")
-        self._agreement_id = agreement_id or os.getenv("PAQAR_AGREEMENT_ID", "")
-        self._base_url     = _get_base_url()
-        self._timeout      = timeout
+        self._username = username or os.getenv("MICORREO_USERNAME", "")
+        self._password = password or os.getenv("MICORREO_PASSWORD", "")
+        self._base_url = _get_base_url()
+        self._timeout  = timeout
         self._http: Optional[httpx.AsyncClient] = None
 
-        if not self._api_key:
-            logger.warning("PAQAR_API_KEY no está configurada.")
-        if not self._agreement_id:
-            logger.warning("PAQAR_AGREEMENT_ID no está configurada.")
+        if not self._username or not self._password:
+            logger.warning("Credenciales MICORREO_USERNAME o MICORREO_PASSWORD no están configuradas.")
 
     def _build_headers(self) -> Dict[str, str]:
-        """Construye los headers obligatorios para todas las peticiones."""
+        """Construye los headers base."""
         return {
-            "Authorization": f"Apikey {self._api_key}",
-            "agreement":     self._agreement_id,
             "Content-Type":  "application/json",
             "Accept":        "application/json",
         }
@@ -446,6 +463,68 @@ class PaqarClient:
                 "Usá 'async with PaqarClient() as client:' o llamá a 'await client.open()' primero."
             )
 
+    async def _fetch_token(self) -> None:
+        self._ensure_open()
+        if not self._username or not self._password:
+            raise ValueError("Faltan credenciales MICORREO_USERNAME / MICORREO_PASSWORD")
+        
+        logger.info("Obteniendo nuevo token MiCorreo...")
+        response = await self._http.post("/token", auth=(self._username, self._password))
+        response.raise_for_status()
+        data = response.json()
+        
+        PaqarClient._token_cache = data.get("token")
+        expires_str = data.get("expires")
+        if expires_str:
+            try:
+                # La API devuelve formato: "2022-04-26 21:16:20"
+                PaqarClient._token_expires_at = datetime.strptime(expires_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                logger.warning(f"No se pudo parsear la fecha de expiración: {expires_str}")
+                PaqarClient._token_expires_at = None
+        else:
+            PaqarClient._token_expires_at = None
+            
+        logger.info("Token MiCorreo obtenido exitosamente.")
+
+    async def _ensure_token(self) -> str:
+        needs_refresh = False
+        if PaqarClient._token_cache is None:
+            needs_refresh = True
+        elif PaqarClient._token_expires_at is not None:
+            # Refresh if it expires in less than 2 minutes
+            if datetime.now() + timedelta(minutes=2) >= PaqarClient._token_expires_at:
+                needs_refresh = True
+                
+        if needs_refresh:
+            await self._fetch_token()
+            
+        return PaqarClient._token_cache
+
+    async def _request(
+        self, method: str, endpoint: str, **kwargs
+    ) -> httpx.Response:
+        self._ensure_open()
+        
+        token = await self._ensure_token()
+        
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {token}"
+        kwargs["headers"] = headers
+        
+        req = self._http.build_request(method, endpoint, **kwargs)
+        response = await self._http.send(req)
+        
+        if response.status_code == 401:
+            logger.warning("Token MiCorreo expirado o inválido (401). Renovando...")
+            await self._fetch_token()
+            token = PaqarClient._token_cache
+            headers["Authorization"] = f"Bearer {token}"
+            req.headers["Authorization"] = headers["Authorization"]
+            response = await self._http.send(req)
+            
+        return response
+
     @staticmethod
     def _handle_response(response: httpx.Response) -> Dict[str, Any]:
         """
@@ -456,7 +535,7 @@ class PaqarClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.error(
-                "Paq.ar API error %s [%s] → %s",
+                "MiCorreo API error %s [%s] → %s",
                 exc.response.status_code,
                 exc.request.url,
                 exc.response.text,
@@ -477,30 +556,26 @@ class PaqarClient:
         self, endpoint: str, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """GET request al endpoint dado (relativo a la URL base)."""
-        self._ensure_open()
-        response = await self._http.get(endpoint, params=params)
+        response = await self._request("GET", endpoint, params=params)
         return self._handle_response(response)
 
     async def post(
-        self, endpoint: str, payload: Optional[Dict[str, Any]] = None
+        self, endpoint: str, payload: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """POST request con body JSON."""
-        self._ensure_open()
-        response = await self._http.post(endpoint, json=payload or {})
+        response = await self._request("POST", endpoint, json=payload or {}, params=params)
         return self._handle_response(response)
 
     async def put(
         self, endpoint: str, payload: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """PUT request con body JSON."""
-        self._ensure_open()
-        response = await self._http.put(endpoint, json=payload or {})
+        response = await self._request("PUT", endpoint, json=payload or {})
         return self._handle_response(response)
 
     async def delete(self, endpoint: str) -> Dict[str, Any]:
         """DELETE request."""
-        self._ensure_open()
-        response = await self._http.delete(endpoint)
+        response = await self._request("DELETE", endpoint)
         return self._handle_response(response)
 
     # ------------------------------------------------------------------
@@ -509,30 +584,21 @@ class PaqarClient:
 
     async def validate_credentials(self) -> Dict[str, Any]:
         """
-        Valida las credenciales configuradas realizando un GET a /auth.
-
-        Retorna el JSON de respuesta si las credenciales son válidas.
-        Lanza httpx.HTTPStatusError con status 401 si son inválidas.
-
-        Ejemplo de uso:
-            async with PaqarClient() as client:
-                result = await client.validate_credentials()
-                print(result)  # {"status": "ok", ...}
+        Valida las credenciales configuradas forzando la obtención del token.
         """
         logger.info(
-            "Validando credenciales Paq.ar en entorno '%s' → %s/auth",
+            "Validando credenciales MiCorreo en entorno '%s' → /token",
             os.getenv("PAQAR_ENV", "test"),
-            self._base_url,
         )
         try:
-            result = await self.get("/auth")
-            logger.info("Credenciales Paq.ar válidas.")
-            return result
+            await self._fetch_token()
+            logger.info("Credenciales MiCorreo válidas.")
+            return {"status": "ok", "message": "Credenciales MiCorreo válidas"}
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:
                 logger.error(
-                    "Credenciales Paq.ar inválidas (401 Unauthorized). "
-                    "Verificá PAQAR_API_KEY y PAQAR_AGREEMENT_ID en el .env."
+                    "Credenciales MiCorreo inválidas (401 Unauthorized). "
+                    "Verificá MICORREO_USERNAME y MICORREO_PASSWORD en el .env."
                 )
             raise
 
@@ -671,9 +737,9 @@ class PaqarClient:
             params.get("labelFormat", "<sin formato>"),
         )
 
-        self._ensure_open()
-        response = await self._http.post("/labels", json=body, params=params or None)
-        raw_list: List[Dict[str, Any]] = self._handle_response(response)
+        response_data = await self.post("/labels", payload=body, params=params or None)
+        
+        raw_list: List[Dict[str, Any]] = response_data
 
         if not isinstance(raw_list, list):
             logger.error("Respuesta inesperada de /labels (no es una lista): %s", raw_list)
@@ -688,6 +754,100 @@ class PaqarClient:
         )
 
         return LabelResponse(items=results)
+
+    async def get_rates(self, request_dto: RateRequestDTO) -> List[Dict[str, Any]]:
+        """
+        Cotizar Envío → POST /rates
+
+        Consume la API de MiCorreo para obtener las tarifas de envío
+        disponibles para los parámetros dados.
+
+        Args:
+            request_dto: DTO validado con los datos de origen, destino,
+                         tipo de entrega y dimensiones del paquete.
+
+        Returns:
+            Lista de diccionarios (rates) con los precios y opciones de envío.
+
+        Raises:
+            pydantic.ValidationError  → si el DTO no supera las validaciones.
+            httpx.HTTPStatusError     → ante respuestas HTTP 4xx / 5xx.
+        """
+        payload = request_dto.model_dump(mode="json")
+
+        logger.info(
+            "Solicitando cotización a MiCorreo | origen=%s destino=%s tipo=%s",
+            request_dto.postalCodeOrigin,
+            request_dto.postalCodeDestination,
+            request_dto.deliveredType,
+        )
+
+        response_data = await self.post("/rates", payload=payload)
+
+        # Si la API devuelve {"rates": [...]}, extraemos la lista.
+        # Si devuelve el array directamente, lo usamos directo.
+        if isinstance(response_data, dict) and "rates" in response_data:
+            return response_data["rates"]
+        elif isinstance(response_data, list):
+            return response_data
+        
+        logger.warning(
+            "La respuesta de /rates no tiene la estructura esperada: %s",
+            response_data
+        )
+        return []
+
+    async def get_agencies(self, customerId: str, provinceCode: str) -> List[Dict[str, Any]]:
+        """
+        Consultar Sucursales → GET /agencies
+
+        Args:
+            customerId: ID del cliente.
+            provinceCode: Código de provincia de 1 letra.
+
+        Returns:
+            Lista de agencias.
+        """
+        params = {
+            "customerId": customerId,
+            "provinceCode": provinceCode.upper().strip()
+        }
+        logger.info(
+            "Solicitando agencias a MiCorreo | provincia=%s",
+            params["provinceCode"]
+        )
+        response_data = await self.get("/agencies", params=params)
+        
+        # Puede devolver lista directo o dict tipo {"agencies": [...]}
+        agencies = response_data.get("agencies", response_data) if isinstance(response_data, dict) else response_data
+        if not isinstance(agencies, list):
+            logger.warning("La respuesta de /agencies no tiene estructura de lista: %s", response_data)
+            return []
+        return agencies
+
+    async def get_tracking(self, shippingId: str) -> List[Dict[str, Any]]:
+        """
+        Consultar Tracking → GET /shipping/tracking
+        (Envía body JSON)
+
+        Args:
+            shippingId: Número de seguimiento.
+
+        Returns:
+            Array de eventos.
+        """
+        payload = {"shippingId": shippingId}
+        logger.info("Consultando tracking en MiCorreo | shippingId=%s", shippingId)
+        
+        # GET con request body
+        response = await self._request("GET", "/shipping/tracking", json=payload)
+        response_data = self._handle_response(response)
+        
+        events = response_data.get("events", response_data) if isinstance(response_data, dict) else response_data
+        if not isinstance(events, list):
+            logger.warning("La respuesta de tracking no contiene un array 'events': %s", response_data)
+            return []
+        return events
 
     # ------------------------------------------------------------------
     # Propiedades de utilidad
@@ -809,3 +969,109 @@ def save_labels_batch(
             failed.append(label.trackingNumber)
 
     return saved, failed
+
+
+# ---------------------------------------------------------------------------
+# DTOs y Servicios para Importar Orden (POST /shipping/import)
+# ---------------------------------------------------------------------------
+
+class OriginAddressDTO(BaseModel):
+    provinceCode: Literal["E"] = "E"
+
+class SenderDTO(BaseModel):
+    address: OriginAddressDTO
+
+class RecipientDTO(BaseModel):
+    name: str
+    email: str
+
+class ShippingAddressDTO(BaseModel):
+    streetName: str
+    streetNumber: str
+    city: str
+    provinceCode: str
+    postalCode: str
+
+class ShippingDTO(BaseModel):
+    deliveryType: Literal["D", "S"]
+    productType: str = "CP"
+    weight: int
+    height: int
+    length: int
+    width: int
+    agency: Optional[str] = None
+    address: Optional[ShippingAddressDTO] = None
+
+    @field_validator("weight", "height", "length", "width")
+    @classmethod
+    def validate_positive_integer(cls, v: int, info) -> int: # noqa: ANN001
+        if v <= 0:
+            raise ValueError(f"El valor de '{info.field_name}' debe ser mayor a 0.")
+        return v
+
+    @model_validator(mode="after")
+    def validate_delivery_constraints(self) -> "ShippingDTO":
+        if self.deliveryType == "S" and not self.agency:
+            raise ValueError("El campo 'agency' es obligatorio cuando 'deliveryType' es 'S'.")
+        if self.deliveryType == "D" and not self.address:
+            raise ValueError("El campo 'address' es obligatorio cuando 'deliveryType' es 'D'.")
+        return self
+
+class ShippingImportRequestDTO(BaseModel):
+    customerId: str
+    extOrderId: str
+    sender: SenderDTO
+    recipient: RecipientDTO
+    shipping: ShippingDTO
+
+
+async def import_shipping(payload: ShippingImportRequestDTO, jwt_token: str) -> str:
+    """
+    Importar Orden → POST /shipping/import
+
+    Envía una orden completa de compra para registrarla en MiCorreo.
+    Debe llamarse inyectando directamente el JWT en lugar de aprovechar PaqarClient
+    ya que requiere manejo explícito de la sesión provista.
+
+    Args:
+        payload: DTO agrupado con todos los detalles de emisor, destinatario y paquete.
+        jwt_token: Token Bearer previamente solicitado ('_token_cache' de PaqarClient).
+
+    Returns:
+        Fecha de creación devuelta por la API (createdAt).
+
+    Raises:
+        Exception específica si la API responde 402.
+        httpx.HTTPStatusError genérico en otros casos.
+    """
+    url = f"{_get_base_url()}/shipping/import"
+    
+    headers = {
+        "Authorization": f"Bearer {jwt_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    logger.info("Importando orden en MiCorreo | extOrderId=%s", payload.extOrderId)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url, 
+            json=payload.model_dump(mode="json", exclude_none=True), 
+            headers=headers
+        )
+
+        if response.status_code == 402:
+            logger.error("Error 402 devuelto por MiCorreo al importar: Falla por saldo insuficiente o pago requerido.")
+            raise Exception("No se pudo importar la orden (Error 402: Payment Required).")
+        
+        # Validar otros errores HTTP
+        response.raise_for_status()
+        
+        # Parseo exitoso
+        data = response.json()
+        createdAt = data.get("createdAt", "")
+        
+        logger.info("Orden importada exitosamente en MiCorreo. createdAt=%s", createdAt)
+        
+        return createdAt

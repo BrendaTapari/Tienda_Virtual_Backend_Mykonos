@@ -145,8 +145,9 @@ from routes import branch
 app.include_router(branch.router, prefix="/branch", tags=["Sucursales"])
 
 # Import and include admin router
-from routes import admin
+from routes import admin, shipping_config
 app.include_router(admin.router, prefix="/admin", tags=["Administración"])
+app.include_router(shipping_config.router, prefix="/api/admin/shipping-config", tags=["Envíos"])
 
 # Import and include cart and orders routers
 # Import and include cart and orders routers
