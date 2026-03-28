@@ -182,16 +182,34 @@ async def get_products_variants_by_branch(product_id: int):
             
             
             for variant in unique_variants:
-                await conn.execute(
-                    """
-                    INSERT INTO web_variants (product_id, size_id, color_id, displayed_stock, is_active)
-                    VALUES ($1, $2, $3, 0, TRUE)
-                    ON CONFLICT (product_id, size_id, color_id) DO NOTHING
-                    """,
-                    variant['product_id'],
-                    variant['size_id'],
-                    variant['color_id']
-                )
+                size_id = variant['size_id']
+                color_id = variant['color_id']
+                product_id_v = variant['product_id']
+
+                if size_id is not None:
+                    # Normal case: has size — use the partial unique index
+                    await conn.execute(
+                        """
+                        INSERT INTO web_variants (product_id, size_id, color_id, displayed_stock, is_active)
+                        VALUES ($1, $2, $3, 0, TRUE)
+                        ON CONFLICT (product_id, size_id, color_id)
+                        WHERE size_id IS NOT NULL
+                        DO NOTHING
+                        """,
+                        product_id_v, size_id, color_id
+                    )
+                else:
+                    # No size (e.g. jewellery) — use the partial index for NULL size
+                    await conn.execute(
+                        """
+                        INSERT INTO web_variants (product_id, size_id, color_id, displayed_stock, is_active)
+                        VALUES ($1, NULL, $2, 0, TRUE)
+                        ON CONFLICT (product_id, color_id)
+                        WHERE size_id IS NULL
+                        DO NOTHING
+                        """,
+                        product_id_v, color_id
+                    )
             
             
             query = """
@@ -212,7 +230,7 @@ async def get_products_variants_by_branch(product_id: int):
                 LEFT JOIN colors c ON wsv.color_id = c.id
                 JOIN web_variants wv 
                     ON wv.product_id = wsv.product_id 
-                    AND wv.size_id = wsv.size_id 
+                    AND wv.size_id IS NOT DISTINCT FROM wsv.size_id 
                     AND wv.color_id = wsv.color_id
                 LEFT JOIN web_variant_branch_assignment wvba
                     ON wvba.variant_id = wv.id AND wvba.branch_id = s.id

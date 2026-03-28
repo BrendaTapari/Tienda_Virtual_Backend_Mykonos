@@ -11,7 +11,7 @@ async def r():
         print("Initializing DB...")
         await DatabaseManager.initialize()
         
-        migration_file = "migrations/007_add_notifications.sql"
+        migration_file = "migrations/017_web_variants_nullable_size.sql"
         print(f"Reading migration file: {migration_file}")
         
         with open(migration_file, "r") as f:

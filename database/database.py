@@ -51,6 +51,8 @@ class TABLES(Enum):
     WAITING_LIST = "lista_espera"
     WAITING_LIST_SIZES = "lista_espera_talles"
     WAITING_LIST_COLORS = "lista_espera_colores"
+    WEB_TAGS = "web_tags"  # Tags para la tienda online (ej: noche, elegante)
+    PRODUCT_TAGS = "product_tags"  # Relación muchos a muchos entre productos y tags
 
 
 DATABASE_TABLES = {
@@ -320,6 +322,9 @@ DATABASE_TABLES = {
             "descripcion_web": "TEXT", #descripcion del producto para la tienda online.
             "precio_web": "REAL", #precio del producto para la tienda online.
             "slug": "TEXT", #slug del producto para la tienda online es para la url.
+            "alt_text": "TEXT", #texto descriptivo alternativo del producto (accesibilidad/SEO).
+            "technical_details": "TEXT", #JSON con detalles técnicos del producto.
+            "base_description": "TEXT", #descripción base del producto.
         },
         "foreign_keys": [
             {  # Relación con la tabla de usuarios.
@@ -968,7 +973,7 @@ DATABASE_TABLES = {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
             "product_id": "INTEGER NOT NULL",
-            "size_id": "INTEGER NOT NULL",
+            "size_id": "INTEGER",  # Identificador del talle (puede ser NULL para productos sin talle, ej: accesorios).
             "color_id": "INTEGER NOT NULL",
             "displayed_stock": "INTEGER DEFAULT 0", 
             "is_active": "BOOLEAN DEFAULT 1",
@@ -995,7 +1000,9 @@ DATABASE_TABLES = {
             },
         ],
         # constraint para evitar duplicados de variantes en la web
-        "constraints": ["UNIQUE(product_id, size_id, color_id)"]
+        # Unique constraint handled by partial indexes in DB (to support NULL size_id):
+        # uq_web_variants_with_size: UNIQUE(product_id, size_id, color_id) WHERE size_id IS NOT NULL
+        # uq_web_variants_no_size:   UNIQUE(product_id, color_id) WHERE size_id IS NULL
     },
     TABLES.STORAGE: {
         "columns": {
@@ -1124,6 +1131,35 @@ DATABASE_TABLES = {
             },
         ],
         "constraints": ["UNIQUE(variant_id, branch_id)"]
+    },
+
+    TABLES.WEB_TAGS: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único del tag.
+            "tag_name": "TEXT NOT NULL UNIQUE",  # Nombre del tag (ej: noche, elegante). Debe ser único.
+            "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",  # Fecha de creación.
+        }
+    },
+    TABLES.PRODUCT_TAGS: {
+        "columns": {
+            "product_id": "INTEGER NOT NULL",  # ID del producto.
+            "tag_id": "INTEGER NOT NULL",  # ID del tag.
+        },
+        "primary_key": ["product_id", "tag_id"],  # Clave primaria compuesta para evitar duplicados.
+        "foreign_keys": [
+            {  # Relación con la tabla de productos.
+                "column": "product_id",
+                "reference_table": TABLES.PRODUCTS,
+                "reference_column": "id",
+                "export_column_name": "product_name",
+            },
+            {  # Relación con la tabla de tags.
+                "column": "tag_id",
+                "reference_table": TABLES.WEB_TAGS,
+                "reference_column": "id",
+                "export_column_name": "tag_name",
+            },
+        ],
     },
 
 }

@@ -31,6 +31,7 @@ import base64
 from models.imageUpload import ImageUpload
 from models.imageResponse import ImageResponse
 from models.imageReorder import ReorderImagesRequest
+from pydantic import BaseModel, Field
 from datetime import datetime
 import os
 from sqlalchemy.orm import Session
@@ -181,6 +182,9 @@ async def get_all_products_info(product_id: int):
                 p.en_tienda_online,
                 p.nombre_web,
                 p.precio_web,
+                p.alt_text,
+                p.technical_details,
+                p.base_description,
                 e.entity_name as provider_name,
                 g.group_name,
                 COALESCE(MAX(d.discount_percentage), MAX(p.discount_percentage), 0) as discount_percentage
@@ -231,6 +235,17 @@ async def get_all_products_info(product_id: int):
         """
         web_stock = await db.fetch_val(query_web_stock, product_id) or 0
 
+        # 5. Tags Query
+        query_tags = """
+            SELECT wt.id, wt.tag_name
+            FROM product_tags pt
+            JOIN web_tags wt ON pt.tag_id = wt.id
+            WHERE pt.product_id = $1
+            ORDER BY wt.tag_name ASC
+        """
+        tags_result = await db.fetch_all(query_tags, product_id)
+        tags = [dict(t) for t in tags_result]
+
         # Construct Response
         return {
             "id": product['id'],
@@ -246,6 +261,10 @@ async def get_all_products_info(product_id: int):
             "en_tienda_online": product['en_tienda_online'],
             "nombre_web": product['nombre_web'],
             "precio_web": product['precio_web'],
+            "alt_text": product['alt_text'],
+            "technical_details": product['technical_details'],
+            "base_description": product['base_description'],
+            "tags": tags,
             "stock_web": int(web_stock),
             "images": images,
             "variants": [dict(v) for v in variants]
@@ -366,6 +385,22 @@ async def toggle_product_online(product_id: int, toggle_data: ToggleOnlineReques
                 params.append(toggle_data.slug)
                 param_count += 1
         
+        # Handle the 3 new extended fields (always optional, any activation state)
+        if toggle_data.alt_text is not None:
+            update_fields.append(f"alt_text = ${param_count}")
+            params.append(toggle_data.alt_text)
+            param_count += 1
+        
+        if toggle_data.technical_details is not None:
+            update_fields.append(f"technical_details = ${param_count}")
+            params.append(toggle_data.technical_details)
+            param_count += 1
+        
+        if toggle_data.base_description is not None:
+            update_fields.append(f"base_description = ${param_count}")
+            params.append(toggle_data.base_description)
+            param_count += 1
+        
         # Add last_modified_date
         update_fields.append(f"last_modified_date = CURRENT_TIMESTAMP")
         
@@ -381,10 +416,28 @@ async def toggle_product_online(product_id: int, toggle_data: ToggleOnlineReques
                       original_price, discount_percentage, discount_amount,
                       has_discount, comments, state, 
                       en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
+                      alt_text, technical_details, base_description,
                       creation_date, last_modified_date
         """
         
         result = await db.fetch_one(query, *params)
+        
+        # Update tags if provided (replace-all strategy)
+        if toggle_data.tags is not None:
+            # Remove all existing tag associations for this product
+            await db.execute(
+                "DELETE FROM product_tags WHERE product_id = $1",
+                product_id
+            )
+            # Insert new tag associations
+            for tag_id in toggle_data.tags:
+                try:
+                    await db.execute(
+                        "INSERT INTO product_tags (product_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        product_id, tag_id
+                    )
+                except Exception:
+                    pass  # Skip invalid tag IDs
         
         return result
         
@@ -2049,3 +2102,78 @@ async def debug_barcode_lookup(barcode: str):
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────
+# TAG ENDPOINTS  (web_tags + product_tags)
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/tags", dependencies=[Depends(require_admin)])
+async def list_tags():
+    """
+    Lista todos los tags disponibles en la tienda online.
+    Incluye la cantidad de productos que tiene cada tag.
+    """
+    try:
+        rows = await db.fetch_all(
+            """
+            SELECT wt.id, wt.tag_name,
+                   COUNT(pt.product_id) AS product_count
+            FROM web_tags wt
+            LEFT JOIN product_tags pt ON pt.tag_id = wt.id
+            GROUP BY wt.id, wt.tag_name
+            ORDER BY wt.tag_name ASC
+            """
+        )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Error listing tags: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TagCreate(BaseModel):
+    tag_name: str = Field(..., description="Nombre del tag (ej: noche, elegante)")
+
+
+@router.post("/tags", dependencies=[Depends(require_admin)], status_code=201)
+async def create_tag(tag: TagCreate):
+    """
+    Crea un nuevo tag web. El nombre debe ser único.
+    """
+    try:
+        result = await db.fetch_one(
+            """
+            INSERT INTO web_tags (tag_name)
+            VALUES ($1)
+            RETURNING id, tag_name, created_at
+            """,
+            tag.tag_name.strip().lower()
+        )
+        return dict(result)
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            raise HTTPException(status_code=409, detail=f"El tag '{tag.tag_name}' ya existe")
+        logger.error(f"Error creating tag: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tags/{tag_id}", dependencies=[Depends(require_admin)])
+async def delete_tag(tag_id: int):
+    """
+    Elimina un tag. También elimina todas las asociaciones de ese tag con productos.
+    """
+    try:
+        existing = await db.fetch_one("SELECT id FROM web_tags WHERE id = $1", tag_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Tag no encontrado")
+
+        # ON DELETE CASCADE handles product_tags automatically if configured;
+        # but to be safe we delete explicitly first.
+        await db.execute("DELETE FROM product_tags WHERE tag_id = $1", tag_id)
+        await db.execute("DELETE FROM web_tags WHERE id = $1", tag_id)
+        return {"message": f"Tag {tag_id} eliminado correctamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting tag {tag_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

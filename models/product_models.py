@@ -32,6 +32,10 @@ class ProductBase(BaseModel):
     descripcion_web: Optional[str] = Field(None, description="Product description for online store")
     slug: Optional[str] = Field(None, description="URL-friendly slug for the product")
     precio_web: Optional[float] = Field(None, description="Price for online store")
+    # Extended product fields
+    alt_text: Optional[str] = Field(None, description="Descriptive alt text for accessibility/SEO")
+    technical_details: Optional[str] = Field(None, description="JSON string with technical details of the product")
+    base_description: Optional[str] = Field(None, description="Base description of the product")
 
 
 class ProductCreate(ProductBase):
@@ -63,6 +67,10 @@ class ProductUpdate(BaseModel):
     descripcion_web: Optional[str] = None
     slug: Optional[str] = None
     precio_web: Optional[float] = None
+    # Extended product fields
+    alt_text: Optional[str] = None
+    technical_details: Optional[str] = None
+    base_description: Optional[str] = None
 
 
 class ProductResponse(ProductBase):
@@ -209,6 +217,12 @@ class ToggleOnlineRequest(BaseModel):
     descripcion_web: Optional[str] = Field(None, description="Product description for online store")
     precio_web: Optional[float] = Field(None, description="Price for online store")
     slug: Optional[str] = Field(None, description="URL-friendly slug (auto-generated if not provided)")
+    # Extended web fields
+    alt_text: Optional[str] = Field(None, description="Descriptive alt text for accessibility/SEO")
+    technical_details: Optional[str] = Field(None, description="JSON string with technical details")
+    base_description: Optional[str] = Field(None, description="Base description of the product")
+    # Tags: list of tag IDs to associate with the product (replaces existing assignment)
+    tags: Optional[List[int]] = Field(None, description="List of tag IDs to assign to the product")
 
 
 class ProductVariantInfo(BaseModel):
@@ -236,6 +250,12 @@ class ProductInfoMatrix(BaseModel):
     nombre_web: Optional[str] = None
     precio_web: Optional[float] = None
     stock_web: int = Field(0, description="Web stock available")
+    # Extended web fields
+    alt_text: Optional[str] = None
+    technical_details: Optional[str] = None
+    base_description: Optional[str] = None
+    # Tags
+    tags: List[dict] = Field(default_factory=list, description="Tags assigned to this product")
     
     # Collections
     images: List[str] = []
