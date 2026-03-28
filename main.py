@@ -144,6 +144,10 @@ app.include_router(contact.router, prefix="/contact", tags=["Contacto"])
 from routes import branch
 app.include_router(branch.router, prefix="/branch", tags=["Sucursales"])
 
+# Web Tags (separate prefix to avoid conflict with /products/{product_id})
+from routes import tags as tags_router
+app.include_router(tags_router.router, prefix="/web-tags", tags=["Tags Web"])
+
 # Import and include admin router
 from routes import admin, shipping_config
 app.include_router(admin.router, prefix="/admin", tags=["Administración"])

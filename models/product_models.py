@@ -130,9 +130,9 @@ class ProductWithImages(BaseModel):
 # Online store product model
 class OnlineStoreProductVariant(BaseModel):
     variant_id: int        # ID de la variante (puede ser de web_variants o warehouse_stock_variants)
-    talle: str
-    color: str
-    color_hex: str
+    talle: Optional[str] = None
+    color: Optional[str] = None
+    color_hex: Optional[str] = None
     stock: int             # Stock calculado
     barcode: Optional[str] = None
 
@@ -161,9 +161,9 @@ class ProductDetail(BaseModel):
     """Complete product information including variants, colors, sizes, and stock."""
     id: int
     nombre_web: str
-    descripcion_web: str
+    descripcion_web: Optional[str] = None
     precio_web: Optional[float] = None
-    slug: str
+    slug: Optional[str] = None
     category: Optional[str] = None
     images: List[str] = Field(default_factory=list, description="List of image URLs")
     stock_disponible: int = Field(0, description="Total available stock")
