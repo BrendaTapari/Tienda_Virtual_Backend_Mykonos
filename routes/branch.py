@@ -28,7 +28,7 @@ async def get_all_active_branches():
                 horarios,
                 instagram
             FROM storage
-            WHERE status = 'active'
+            WHERE status = 'Active'
         """)
         return branches
     except Exception as e:
