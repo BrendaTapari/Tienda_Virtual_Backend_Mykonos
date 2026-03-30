@@ -9,11 +9,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.get("/all", response_model=List[BranchResponse])
-async def get_all_branches():
+@router.get("/all-active", response_model=List[BranchResponse])
+async def get_all_active_branches():
     try:
         # The table name is 'storage' as per TABLES.STORAGE definition in database.py
-        # Selecting columns matching BranchResponse
+        # Selecting columns matching BranchResponse and status = 'active'
         branches = await db.fetch_all("""
             SELECT 
                 id, 
@@ -28,13 +28,14 @@ async def get_all_branches():
                 horarios,
                 instagram
             FROM storage
+            WHERE status = 'active'
         """)
         return branches
     except Exception as e:
-        logger.error(f"Error fetching all branches (admin): {e}")
+        logger.error(f"Error fetching all active branches (admin): {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener todas las sucursales: {str(e)}"
+            detail=f"Error al obtener todas las sucursales activas: {str(e)}"
         )
 
 @router.post("/", response_model=BranchResponse, dependencies=[Depends(require_admin)])
