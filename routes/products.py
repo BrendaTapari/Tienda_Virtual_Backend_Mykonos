@@ -1643,13 +1643,13 @@ async def search_products_online(
                     (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
                     ARRAY[]::TEXT[]
                 ) as images,
-                COALESCE(SUM(wsv.quantity), 0) as stock_disponible,
+                COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible,
                 COALESCE(MAX(d.discount_percentage), 0) as discount_percentage,
                 e.entity_name as provider
             FROM products p
             LEFT JOIN groups g ON p.group_id = g.id
             LEFT JOIN entities e ON p.provider_id = e.id
-            LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
+            LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
             LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
                 AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
                 AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
@@ -1667,17 +1667,17 @@ async def search_products_online(
             # Obtener variantes para este producto
             variants_query = """
                 SELECT 
-                    wsv.id as variant_id,
-                    sz.size_name as talle,
+                    wv.id as variant_id,
+                    s.size_name as talle,
                     c.color_name as color,
                     c.color_hex,
-                    wsv.quantity as stock,
-                    wsv.variant_barcode as barcode
-                FROM warehouse_stock_variants wsv
-                LEFT JOIN sizes sz ON wsv.size_id = sz.id
-                LEFT JOIN colors c ON wsv.color_id = c.id
-                WHERE wsv.product_id = $1 AND wsv.quantity > 0
-                ORDER BY sz.size_name, c.color_name
+                    wv.displayed_stock as stock,
+                    '' as barcode
+                FROM web_variants wv
+                LEFT JOIN sizes s ON wv.size_id = s.id
+                LEFT JOIN colors c ON wv.color_id = c.id
+                WHERE wv.product_id = $1 AND wv.is_active = TRUE AND wv.displayed_stock > 0
+                ORDER BY s.size_name, c.color_name
             """
             variants = await db.fetch_all(variants_query, product["id"])
 
