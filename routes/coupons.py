@@ -47,6 +47,7 @@ class CouponResponse(BaseModel):
     id: int
     code: str
     type_id: int
+    type_name: Optional[str] = None
     discount_type: str
     discount_value: float
     user_id: Optional[int]
@@ -55,6 +56,7 @@ class CouponResponse(BaseModel):
     usage_limit: int
     used_count: int
     is_active: bool
+    deactivated_at: Optional[datetime] = None
 
 
 # ==========================================
@@ -118,7 +120,7 @@ async def create_coupon(coupon_data: CouponCreate):
     try:
         # Verificar que el tipo exista y obtener su nombre
         ctype = await db.fetch_one(
-            "SELECT id, discount_type FROM coupon_types WHERE id = $1",
+            "SELECT id, name, discount_type FROM coupon_types WHERE id = $1",
             coupon_data.type_id,
         )
         if not ctype:
@@ -134,7 +136,7 @@ async def create_coupon(coupon_data: CouponCreate):
         query = """
             INSERT INTO coupons (code, type_id, discount_value, user_id, valid_until, usage_limit, used_count, is_active)
             VALUES ($1, $2, $3, $4, $5, $6, 0, TRUE)
-            RETURNING id, code, type_id, discount_value, user_id, valid_from, valid_until, usage_limit, used_count, is_active
+            RETURNING id, code, type_id, discount_value, user_id, valid_from, valid_until, usage_limit, used_count, is_active, deactivated_at
         """
         row = await db.fetch_one(
             query,
@@ -149,6 +151,7 @@ async def create_coupon(coupon_data: CouponCreate):
         )
 
         result = dict(row)
+        result["type_name"] = ctype["name"]
         result["discount_type"] = ctype["discount_type"]
         return result
 
@@ -171,10 +174,16 @@ async def list_coupons(offset: int = 0, limit: int = 100):
     try:
         query = """
             SELECT 
-                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active,
-                t.discount_type
+                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
+                t.name as type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
+            WHERE c.is_active = TRUE
+               OR (
+                    c.is_active = FALSE
+                    AND c.deactivated_at IS NOT NULL
+                    AND c.deactivated_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
+               )
             ORDER BY c.id DESC
             LIMIT $1 OFFSET $2
         """
@@ -201,7 +210,18 @@ async def toggle_coupon_status(coupon_id: int):
         # Invertimos el estado (Baja lógica si pasa a False)
         new_status = not coupon["is_active"]
         await db.execute(
-            "UPDATE coupons SET is_active = $1 WHERE id = $2", new_status, coupon_id
+            """
+            UPDATE coupons
+            SET
+                is_active = $1,
+                deactivated_at = CASE
+                    WHEN $1 = FALSE THEN CURRENT_TIMESTAMP
+                    ELSE NULL
+                END
+            WHERE id = $2
+            """,
+            new_status,
+            coupon_id,
         )
 
         estado = "activated" if new_status else "deactivated"
@@ -259,8 +279,8 @@ async def get_coupon_by_code(coupon_code: str):
         now = datetime.utcnow()
         query = """
             SELECT 
-                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active,
-                t.discount_type
+                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
+                t.name as type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
             WHERE c.code = $1
@@ -288,13 +308,23 @@ async def get_coupon_by_code(coupon_code: str):
 
         if valid_until and now > valid_until:
             await db.execute(
-                "UPDATE coupons SET is_active = FALSE WHERE id = $1", coupon["id"]
+                """
+                UPDATE coupons
+                SET is_active = FALSE, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+                WHERE id = $1
+                """,
+                coupon["id"],
             )
             raise HTTPException(status_code=400, detail="Coupon has expired")
 
         if coupon["used_count"] >= coupon["usage_limit"]:
             await db.execute(
-                "UPDATE coupons SET is_active = FALSE WHERE id = $1", coupon["id"]
+                """
+                UPDATE coupons
+                SET is_active = FALSE, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+                WHERE id = $1
+                """,
+                coupon["id"],
             )
             raise HTTPException(status_code=400, detail="Coupon usage limit reached")
 
@@ -327,7 +357,12 @@ async def used_cupon(coupon_id: int):
         if coupon["used_count"] >= coupon["usage_limit"]:
             # If limit is already reached, ensure coupon is inactive.
             await db.execute(
-                "UPDATE coupons SET is_active = FALSE WHERE id = $1", coupon_id
+                """
+                UPDATE coupons
+                SET is_active = FALSE, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+                WHERE id = $1
+                """,
+                coupon_id,
             )
             raise HTTPException(status_code=400, detail="Coupon usage limit reached")
 
@@ -340,12 +375,17 @@ async def used_cupon(coupon_id: int):
                 is_active = CASE
                     WHEN used_count + 1 >= usage_limit THEN FALSE
                     ELSE is_active
+                END,
+                deactivated_at = CASE
+                    WHEN used_count + 1 >= usage_limit THEN COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+                    ELSE deactivated_at
                 END
             WHERE id = $1
             RETURNING
                 id,
                 code,
                 type_id,
+                (SELECT name FROM coupon_types WHERE id = coupons.type_id) AS type_name,
                 (SELECT discount_type FROM coupon_types WHERE id = coupons.type_id) AS discount_type,
                 discount_value,
                 user_id,
@@ -353,7 +393,8 @@ async def used_cupon(coupon_id: int):
                 valid_until,
                 usage_limit,
                 used_count,
-                is_active
+                is_active,
+                deactivated_at
             """,
             coupon_id,
         )
