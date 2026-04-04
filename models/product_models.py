@@ -10,6 +10,7 @@ from datetime import datetime
 
 class ProductBase(BaseModel):
     """Base product model with common fields."""
+
     product_name: str = Field(..., description="Name of the product")
     description: Optional[str] = Field(None, description="Product description")
     cost: Optional[float] = Field(None, description="Cost price of the product")
@@ -20,31 +21,47 @@ class ProductBase(BaseModel):
     brand_id: Optional[int] = Field(None, description="Brand ID")
     tax: Optional[float] = Field(None, description="Tax percentage")
     discount: Optional[float] = Field(None, description="Discount amount")
-    original_price: Optional[float] = Field(0, description="Original price before discount")
+    original_price: Optional[float] = Field(
+        0, description="Original price before discount"
+    )
     discount_percentage: Optional[float] = Field(0, description="Discount percentage")
     discount_amount: Optional[float] = Field(0, description="Discount amount")
-    has_discount: Optional[int] = Field(0, description="Whether product has discount (0 or 1)")
+    has_discount: Optional[int] = Field(
+        0, description="Whether product has discount (0 or 1)"
+    )
     comments: Optional[str] = Field(None, description="Additional comments")
     state: Optional[str] = Field("activo", description="Product state")
     # Online store fields
-    en_tienda_online: Optional[bool] = Field(False, description="Whether product is available in online store")
+    en_tienda_online: Optional[bool] = Field(
+        False, description="Whether product is available in online store"
+    )
     nombre_web: Optional[str] = Field(None, description="Product name for online store")
-    descripcion_web: Optional[str] = Field(None, description="Product description for online store")
+    descripcion_web: Optional[str] = Field(
+        None, description="Product description for online store"
+    )
     slug: Optional[str] = Field(None, description="URL-friendly slug for the product")
     precio_web: Optional[float] = Field(None, description="Price for online store")
     # Extended product fields
-    alt_text: Optional[str] = Field(None, description="Descriptive alt text for accessibility/SEO")
-    technical_details: Optional[str] = Field(None, description="JSON string with technical details of the product")
-    base_description: Optional[str] = Field(None, description="Base description of the product")
+    alt_text: Optional[str] = Field(
+        None, description="Descriptive alt text for accessibility/SEO"
+    )
+    technical_details: Optional[str] = Field(
+        None, description="JSON string with technical details of the product"
+    )
+    base_description: Optional[str] = Field(
+        None, description="Base description of the product"
+    )
 
 
 class ProductCreate(ProductBase):
     """Model for creating a new product."""
+
     pass
 
 
 class ProductUpdate(BaseModel):
     """Model for updating an existing product. All fields are optional."""
+
     product_name: Optional[str] = None
     description: Optional[str] = None
     cost: Optional[float] = None
@@ -75,18 +92,24 @@ class ProductUpdate(BaseModel):
 
 class ProductResponse(ProductBase):
     """Model for product responses from the API."""
+
     id: int = Field(..., description="Product ID")
-    user_id: Optional[int] = Field(None, description="User who created/modified the product")
+    user_id: Optional[int] = Field(
+        None, description="User who created/modified the product"
+    )
     images_ids: Optional[int] = Field(None, description="Associated image IDs")
     creation_date: Optional[datetime] = Field(None, description="Product creation date")
-    last_modified_date: Optional[datetime] = Field(None, description="Last modification date")
-    
+    last_modified_date: Optional[datetime] = Field(
+        None, description="Last modification date"
+    )
+
     class Config:
         from_attributes = True  # Allows creation from ORM objects
 
 
 class ProductListResponse(BaseModel):
     """Model for listing multiple products."""
+
     products: list[ProductResponse]
     total: int = Field(..., description="Total number of products")
 
@@ -94,22 +117,25 @@ class ProductListResponse(BaseModel):
 # Image models
 class ProductImage(BaseModel):
     """Model for product images."""
+
     id: int = Field(..., description="Image ID")
     image_url: str = Field(..., description="URL of the image")
     product_id: int = Field(..., description="Product ID this image belongs to")
-    
+
     class Config:
         from_attributes = True
 
 
 class AddProductImage(BaseModel):
     """Model for adding an image to a product."""
+
     image_url: str = Field(..., description="URL of the image to add")
 
 
 # Product with images
 class ProductWithImages(BaseModel):
     """Product model with image URLs."""
+
     id: int
     product_name: str
     nombre_web: Optional[str] = None
@@ -122,22 +148,25 @@ class ProductWithImages(BaseModel):
     images: List[str] = Field(default_factory=list, description="List of image URLs")
     category: Optional[str] = None
     state: Optional[str] = None
-    
+
     class Config:
         from_attributes = True
 
 
 # Online store product model
 class OnlineStoreProductVariant(BaseModel):
-    variant_id: int        # ID de la variante (puede ser de web_variants o warehouse_stock_variants)
+    variant_id: (
+        int  # ID de la variante (puede ser de web_variants o warehouse_stock_variants)
+    )
     talle: Optional[str] = None
     color: Optional[str] = None
     color_hex: Optional[str] = None
-    stock: int             # Stock calculado
+    stock: int  # Stock calculado
     barcode: Optional[str] = None
 
     class Config:
         orm_mode = True
+
 
 class OnlineStoreProduct(BaseModel):
     id: int
@@ -148,7 +177,7 @@ class OnlineStoreProduct(BaseModel):
     category: str
     images: List[str] = []
     stock_disponible: int  # Suma total del stock
-    variantes: List[OnlineStoreProductVariant] # Lista de variantes
+    variantes: List[OnlineStoreProductVariant]  # Lista de variantes
     discount_percentage: Optional[float] = 0
     provider: Optional[str] = None
 
@@ -159,6 +188,7 @@ class OnlineStoreProduct(BaseModel):
 # Detailed product model with all information
 class ProductDetail(BaseModel):
     """Complete product information including variants, colors, sizes, and stock."""
+
     id: int
     nombre_web: str
     descripcion_web: Optional[str] = None
@@ -168,10 +198,14 @@ class ProductDetail(BaseModel):
     images: List[str] = Field(default_factory=list, description="List of image URLs")
     stock_disponible: int = Field(0, description="Total available stock")
     # Additional detailed fields
-    colores: List[dict] = Field(default_factory=list, description="Available colors with hex codes")
+    colores: List[dict] = Field(
+        default_factory=list, description="Available colors with hex codes"
+    )
     talles: List[str] = Field(default_factory=list, description="Available sizes")
-    variantes: List[dict] = Field(default_factory=list, description="Product variants with stock")
-    
+    variantes: List[dict] = Field(
+        default_factory=list, description="Product variants with stock"
+    )
+
     class Config:
         from_attributes = True
 
@@ -179,13 +213,14 @@ class ProductDetail(BaseModel):
 # Simplified model for the virtual store (matching your original mock data)
 class ProductSimple(BaseModel):
     """Simplified product model for the virtual store frontend."""
+
     id: int
     name: str
     price: float
     description: str
     image: str
     category: str
-    
+
     class Config:
         from_attributes = True
 
@@ -193,6 +228,7 @@ class ProductSimple(BaseModel):
 # Admin endpoint models
 class ProductAllResponse(BaseModel):
     """Model for GET /products/all endpoint - returns all products for admin."""
+
     id: int
     product_name: str
     provider_code: Optional[str] = None
@@ -206,36 +242,53 @@ class ProductAllResponse(BaseModel):
     image_url: Optional[str] = None
     discount_percentage: Optional[float] = 0
     original_price: Optional[float] = 0
-    
+
     class Config:
         from_attributes = True
 
 
 class ToggleOnlineRequest(BaseModel):
     """Model for PATCH /products/{id}/toggle-online endpoint."""
-    en_tienda_online: bool = Field(..., description="Whether to activate/deactivate product in online store")
+
+    en_tienda_online: bool = Field(
+        ..., description="Whether to activate/deactivate product in online store"
+    )
     nombre_web: Optional[str] = Field(None, description="Product name for online store")
-    descripcion_web: Optional[str] = Field(None, description="Product description for online store")
+    descripcion_web: Optional[str] = Field(
+        None, description="Product description for online store"
+    )
     precio_web: Optional[float] = Field(None, description="Price for online store")
-    slug: Optional[str] = Field(None, description="URL-friendly slug (auto-generated if not provided)")
+    slug: Optional[str] = Field(
+        None, description="URL-friendly slug (auto-generated if not provided)"
+    )
     # Extended web fields
-    alt_text: Optional[str] = Field(None, description="Descriptive alt text for accessibility/SEO")
-    technical_details: Optional[str] = Field(None, description="JSON string with technical details")
-    base_description: Optional[str] = Field(None, description="Base description of the product")
+    alt_text: Optional[str] = Field(
+        None, description="Descriptive alt text for accessibility/SEO"
+    )
+    technical_details: Optional[str] = Field(
+        None, description="JSON string with technical details"
+    )
+    base_description: Optional[str] = Field(
+        None, description="Base description of the product"
+    )
     # Tags: list of tag IDs to associate with the product (replaces existing assignment)
-    tags: Optional[List[int]] = Field(None, description="List of tag IDs to assign to the product")
+    tags: Optional[List[int]] = Field(
+        None, description="List of tag IDs to assign to the product"
+    )
 
 
 class ProductVariantInfo(BaseModel):
-    id: int
-    size: str
-    color: str
+    variant_id: int
+    talle: Optional[str] = None
+    color: Optional[str] = None
     stock: int
     barcode: Optional[str] = None
     color_hex: Optional[str] = None
 
+
 class ProductInfoMatrix(BaseModel):
     """Model for the product info matrix endpoint."""
+
     id: int
     product_name: str
     description: Optional[str] = None
@@ -247,7 +300,7 @@ class ProductInfoMatrix(BaseModel):
     provider_code: Optional[str] = None
     provider_name: Optional[str] = None
     group_name: Optional[str] = None
-    
+
     # Web specific
     en_tienda_online: bool = False
     nombre_web: Optional[str] = None
@@ -258,11 +311,13 @@ class ProductInfoMatrix(BaseModel):
     technical_details: Optional[str] = None
     base_description: Optional[str] = None
     # Tags
-    tags: List[dict] = Field(default_factory=list, description="Tags assigned to this product")
-    
+    tags: List[dict] = Field(
+        default_factory=list, description="Tags assigned to this product"
+    )
+
     # Collections
     images: List[str] = []
-    variants: List[ProductVariantInfo] = []
+    variantes: List[ProductVariantInfo] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

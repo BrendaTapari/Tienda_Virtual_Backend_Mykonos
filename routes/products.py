@@ -228,8 +228,8 @@ async def get_all_products_info(product_id: int):
         # Since we don't have a specific branch filter here.
         query_variants = """
             SELECT 
-                wsv.id,
-                s.size_name as size,
+                wsv.id as variant_id,
+                s.size_name as talle,
                 c.color_name as color,
                 SUM(wsv.quantity) as stock,
                 wsv.variant_barcode as barcode
@@ -288,7 +288,7 @@ async def get_all_products_info(product_id: int):
             "tags": tags,
             "stock_web": int(web_stock),
             "images": images,
-            "variants": [dict(v) for v in variants],
+            "variantes": [dict(v) for v in variants],
         }
 
     except HTTPException:
@@ -2079,7 +2079,7 @@ async def get_product_by_slug(slug: str):
         # 2. Variantes web activas con Color Hex
         query_variants = """
             SELECT 
-                wv.id, s.size_name as size, c.color_name as color, c.color_hex,
+                wv.id as variant_id, s.size_name as talle, c.color_name as color, c.color_hex,
                 wv.displayed_stock as stock, '' as barcode
             FROM web_variants wv
             LEFT JOIN sizes s ON wv.size_id = s.id
@@ -2121,7 +2121,7 @@ async def get_product_by_slug(slug: str):
             "tags": tags,
             "stock_web": int(web_stock),
             "images": images,
-            "variants": [dict(v) for v in variants],
+            "variantes": [dict(v) for v in variants],
         }
 
     except HTTPException:
