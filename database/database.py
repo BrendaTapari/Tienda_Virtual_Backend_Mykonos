@@ -53,6 +53,9 @@ class TABLES(Enum):
     WAITING_LIST_COLORS = "lista_espera_colores"
     WEB_TAGS = "web_tags"  # Tags para la tienda online (ej: noche, elegante)
     PRODUCT_TAGS = "product_tags"  # Relación muchos a muchos entre productos y tags
+    COUPON_TYPES = "coupon_types"
+    COUPONS = "coupons"
+
 
 
 DATABASE_TABLES = {
@@ -1158,6 +1161,43 @@ DATABASE_TABLES = {
                 "reference_table": TABLES.WEB_TAGS,
                 "reference_column": "id",
                 "export_column_name": "tag_name",
+            },
+        ],
+    },
+    TABLES.COUPON_TYPES: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único del tipo de cupón.
+            "name": "TEXT NOT NULL",  # Nombre descriptivo del tipo (ej: 'Descuento 20%', 'Envío gratis')
+            "discount_type": "TEXT NOT NULL",  # Tipo de descuento: 'percentage', 'fixed', 'free_shipping'
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        }
+    },
+    TABLES.COUPONS: {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único del cupón.
+            "code": "TEXT NOT NULL UNIQUE",  # Código del cupón (único, case-insensitive por convención).
+            "type_id": "INTEGER NOT NULL",  # FK al tipo de cupón que determina la regla de descuento.
+            "discount_value": "numeric(10,2) DEFAULT 0",  # El valor a descontar en cada instancia.
+            "user_id": "INTEGER",  # FK a web_users; NULL = cupón global, valor = cupón exclusivo para ese usuario.
+            "valid_from": "TIMESTAMP NOT NULL",  # Fecha/hora de inicio de validez del cupón.
+            "valid_until": "TIMESTAMP NOT NULL",  # Fecha/hora de expiración del cupón.
+            "usage_limit": "INTEGER NOT NULL DEFAULT 1",  # Cantidad máxima de usos permitidos.
+            "used_count": "INTEGER NOT NULL DEFAULT 0",  # Cantidad de veces que ya fue utilizado.
+            "is_active": "BOOLEAN NOT NULL DEFAULT 1",  # Indica si el cupón está activo y puede ser aplicado.
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        },
+        "foreign_keys": [
+            {
+                "column": "type_id",
+                "reference_table": TABLES.COUPON_TYPES,
+                "reference_column": "id",
+                "export_column_name": "name",
+            },
+            {
+                "column": "user_id",
+                "reference_table": TABLES.WEB_USERS,
+                "reference_column": "id",
+                "export_column_name": "username",
             },
         ],
     },

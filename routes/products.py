@@ -1413,6 +1413,146 @@ async def get_productos_by_group(groupName: str):
             detail=f"Error al obtener productos del grupo: {str(e)}"
         )
 
+@router.get("/filterProducts", response_model=List[OnlineStoreProduct])
+async def filter_online_products(
+    tags: List[str] = Query(default=[]),
+    groupName: Optional[str] = None
+):
+    """
+    Filtra productos para la tienda online.
+    Soporta múltiples tags (lógica OR) y filtro por grupo.
+    Consulta el stock exclusivo de la WEB (web_variants).
+    """
+    try:
+        params = []
+        group_ids = []
+        
+        # 1. Resolver el árbol de Grupos
+        if groupName:
+            descendant_groups_query = """
+                WITH RECURSIVE group_tree AS (
+                    SELECT id, group_name, parent_group_id
+                    FROM groups
+                    WHERE group_name = $1
+                    
+                    UNION ALL
+                    
+                    SELECT g.id, g.group_name, g.parent_group_id
+                    FROM groups g
+                    INNER JOIN group_tree gt ON g.parent_group_id = gt.id
+                )
+                SELECT id FROM group_tree
+            """
+            descendant_groups = await db.fetch_all(descendant_groups_query, groupName)
+            
+            if not descendant_groups:
+                return [] 
+            
+            group_ids = [g['id'] for g in descendant_groups]
+
+        # 2. Construcción dinámica (Cambiamos wsv por wv para usar el stock web)
+        select_clause = """
+            SELECT 
+                p.id,
+                p.nombre_web,
+                p.descripcion_web,
+                p.precio_web,
+                p.slug,
+                COALESCE(g.group_name, 'Sin categoría') as category,
+                COALESCE(
+                    (SELECT ARRAY_AGG(image_url ORDER BY orden ASC) FROM images WHERE product_id = p.id),
+                    ARRAY[]::TEXT[]
+                ) as images,
+                COALESCE(SUM(wv.displayed_stock), 0) as stock_disponible,
+                COALESCE(MAX(d.discount_percentage), 0) as discount_percentage
+            FROM products p
+        """
+        
+        # Hacemos JOIN con web_variants asegurando que esté activa
+        joins_clause = """
+            LEFT JOIN groups g ON p.group_id = g.id
+            LEFT JOIN web_variants wv ON wv.product_id = p.id AND wv.is_active = TRUE
+            LEFT JOIN discounts d ON d.target_id = p.id AND d.discount_type = 'product' AND d.is_active = TRUE 
+                AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
+        """
+        
+        where_conditions = ["p.en_tienda_online = TRUE"]
+        
+        # Filtro de Tags
+        if tags:
+            joins_clause += """
+                JOIN product_tags pt ON p.id = pt.product_id
+                JOIN web_tags wt ON pt.tag_id = wt.id
+            """
+            lower_tags = [t.lower() for t in tags]
+            tag_placeholders = ', '.join([f"${i+1}" for i in range(len(lower_tags))])
+            where_conditions.append(f"LOWER(wt.tag_name) IN ({tag_placeholders})")
+            params.extend(lower_tags)
+            
+        # Filtro de Grupos
+        if groupName and group_ids:
+            start_idx = len(params) + 1
+            group_placeholders = ', '.join([f"${i}" for i in range(start_idx, start_idx + len(group_ids))])
+            where_conditions.append(f"p.group_id IN ({group_placeholders})")
+            params.extend(group_ids)
+
+        full_query = (
+            select_clause + 
+            joins_clause + 
+            " WHERE " + " AND ".join(where_conditions) + 
+            " GROUP BY p.id, g.group_name ORDER BY p.id DESC"
+        )
+        
+        products = await db.fetch_all(full_query, *params)
+        
+        if not products:
+            return []
+
+        # 3. Variantes Web (Reemplazado para leer de web_variants)
+        result = []
+        for product in products:
+            product_dict = dict(product)
+            
+            # Consultamos wv.displayed_stock en lugar de wsv.quantity
+            variants_query = """
+                SELECT 
+                    wv.id as variant_id,
+                    s.size_name as talle,
+                    c.color_name as color,
+                    c.color_hex,
+                    wv.displayed_stock as stock,
+                    '' as barcode
+                FROM web_variants wv
+                LEFT JOIN sizes s ON wv.size_id = s.id
+                LEFT JOIN colors c ON wv.color_id = c.id
+                WHERE wv.product_id = $1 AND wv.is_active = TRUE AND wv.displayed_stock > 0
+                ORDER BY s.size_name, c.color_name
+            """
+            variants = await db.fetch_all(variants_query, product['id'])
+            
+            product_dict['variantes'] = [
+                {
+                    "variant_id": v['variant_id'],
+                    "talle": v['talle'],
+                    "color": v['color'],
+                    "color_hex": v['color_hex'],
+                    "stock": v['stock'],
+                    "barcode": v['barcode']  # Queda vacío como en tu endpoint original web
+                } 
+                for v in variants
+            ]
+            
+            result.append(product_dict)
+        
+        return result
+        
+    except Exception as e:
+        # logger.error(f"Error filtering products: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al filtrar productos: {str(e)}"
+        )
 
 @router.get("/search", response_model=List[OnlineStoreProduct])
 async def search_products_online(nombre_web: str = Query(..., description="Término de búsqueda (por nombre web)")):
@@ -1501,6 +1641,18 @@ async def get_product(
     product_id: int,
     branch_id: Optional[int] = Query(None, description="ID de sucursal. Null = Stock Web manual.")
 ):
+    """
+    Obtiene todos los datos de un producto para la tienda online.
+    
+    Path Parameters:
+    - product_id: ID del producto
+    
+    Query Parameters:
+    - branch_id: ID de sucursal. Null = Stock Web manual.
+    
+    Returns:
+    - OnlineStoreProduct: Objeto con todos los datos del producto
+    """
     try:
         # --- 1. DATOS PRINCIPALES DEL PRODUCTO ---
         if branch_id is None:
@@ -1699,72 +1851,6 @@ async def create_product(product: ProductCreate):
             detail=f"Error al crear el producto: {str(e)}"
         )
 
-"""
-@router.put("/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: int, product: ProductUpdate):
-    """ """
-    Update an existing product.
-    
-    Path Parameters:
-    - product_id: The ID of the product to update
-    
-    Request Body:
-    - ProductUpdate model with fields to update (all optional)
-    """"""
-    try:
-        # First, check if product exists
-        existing = await db.fetch_one("SELECT id FROM products WHERE id = $1", product_id)
-        if existing is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Producto con ID {product_id} no encontrado"
-            )
-        
-        # Build dynamic update query based on provided fields
-        update_fields = []
-        params = []
-        param_count = 1
-        
-        for field, value in product.dict(exclude_unset=True).items():
-            update_fields.append(f"{field} = ${param_count}")
-            params.append(value)
-            param_count += 1
-        
-        if not update_fields:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No se proporcionaron campos para actualizar"
-            )
-        
-        # Add last_modified_date
-        update_fields.append(f"last_modified_date = CURRENT_TIMESTAMP")
-        
-        # Add product_id as the last parameter
-        params.append(product_id)
-        
-        query = f""""""
-            UPDATE products
-            SET {', '.join(update_fields)}
-            WHERE id = ${param_count}
-            RETURNING id, product_name, description, cost, sale_price, provider_code,
-                      group_id, provider_id, brand_id, tax, discount,
-                      original_price, discount_percentage, discount_amount,
-                      has_discount, comments, state, 
-                      en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
-                      creation_date, last_modified_date
-        """"""
-        result = await db.fetch_one(query, *params)
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating product {product_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar el producto: {str(e)}"
-        ) """
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1864,55 +1950,114 @@ async def get_online_store_products(
         )
 
 
-@router.get("/online-store/{slug}", response_model=OnlineStoreProduct)
+@router.get("/online-store/{slug}", response_model=ProductInfoMatrix)
 async def get_product_by_slug(slug: str):
     """
-    Get a product by its slug for the online store.
-    
-    Path Parameters:
-    - slug: The URL-friendly slug of the product
+    Obtiene la información detallada de un producto para la web usando su slug.
+    Optimizado para evitar campos vacíos por Group By excesivo.
     """
     try:
-        query = """
+        # 1. Query Principal: Datos base del producto
+        # Usamos subconsultas para agregados (descuentos y stock total) 
+        # para que no interfieran con las columnas de texto.
+        query_product = """
             SELECT 
-                p.id,
+                p.id, 
+                p.product_name, 
                 p.nombre_web,
-                p.descripcion_web,
-                p.precio_web,
                 p.slug,
-                COALESCE(g.group_name, 'Sin categoría') as category,
-                COALESCE(
-                    ARRAY_AGG(i.image_url) FILTER (WHERE i.image_url IS NOT NULL),
-                    ARRAY[]::TEXT[]
-                ) as images,
-                COALESCE(SUM(wsv.quantity), 0) as stock_disponible
+                p.cost,
+                p.sale_price, 
+                p.original_price,
+                p.en_tienda_online,
+                p.alt_text, 
+                p.technical_details, 
+                p.base_description,
+                -- Lógica para evitar el 'vacío' en la descripción:
+                COALESCE(NULLIF(p.descripcion_web, ''), p.base_description, 'Sin descripción') as descripcion_web,
+                e.entity_name as provider_name,
+                p.provider_code,
+                g.group_name,
+                -- Subconsulta de descuento para no romper el GROUP BY
+                (SELECT COALESCE(MAX(d.discount_percentage), p.discount_percentage, 0)
+                 FROM discounts d 
+                 WHERE d.target_id = p.id 
+                 AND d.discount_type = 'product' 
+                 AND d.is_active = TRUE 
+                 AND (d.start_date IS NULL OR d.start_date <= CURRENT_TIMESTAMP) 
+                 AND (d.end_date IS NULL OR d.end_date >= CURRENT_TIMESTAMP)
+                ) as discount_percentage,
+                -- Stock total disponible sumando todas las variantes
+                (SELECT COALESCE(SUM(quantity), 0) 
+                 FROM warehouse_stock_variants 
+                 WHERE product_id = p.id
+                ) as stock_disponible
             FROM products p
+            LEFT JOIN entities e ON p.provider_id = e.id
             LEFT JOIN groups g ON p.group_id = g.id
-            LEFT JOIN images i ON i.product_id = p.id
-            LEFT JOIN warehouse_stock_variants wsv ON wsv.product_id = p.id
             WHERE p.slug = $1 AND p.en_tienda_online = TRUE
-            GROUP BY p.id, g.group_name
         """
         
-        product = await db.fetch_one(query, slug)
+        product = await db.fetch_one(query_product, slug)
         
-        if product is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Producto con slug '{slug}' no encontrado en la tienda online"
-            )
-        
-        return product
+        if not product:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        product_id = product['id']
+
+        # 2. Variantes con Color Hex (La que ya te funcionó)
+        query_variants = """
+            SELECT 
+                wsv.id, s.size_name as size, c.color_name as color, c.color_hex,
+                wsv.quantity as stock, wsv.variant_barcode as barcode
+            FROM warehouse_stock_variants wsv
+            LEFT JOIN sizes s ON wsv.size_id = s.id
+            LEFT JOIN colors c ON wsv.color_id = c.id
+            WHERE wsv.product_id = $1
+            ORDER BY s.size_name, c.color_name
+        """
+        variants = await db.fetch_all(query_variants, product_id)
+
+        # 3. Imágenes ordenadas
+        query_images = """
+            SELECT image_url FROM images WHERE product_id = $1 ORDER BY orden ASC
+        """
+        images_result = await db.fetch_all(query_images, product_id)
+        images = [img['image_url'] for img in images_result]
+
+        # 4. Stock Web (específico de la tabla web_variants)
+        query_web_stock = """
+            SELECT COALESCE(SUM(displayed_stock), 0) 
+            FROM web_variants 
+            WHERE product_id = $1 AND is_active = TRUE
+        """
+        web_stock = await db.fetch_val(query_web_stock, product_id) or 0
+
+        # 5. Tags
+        query_tags = """
+            SELECT wt.id, wt.tag_name
+            FROM product_tags pt
+            JOIN web_tags wt ON pt.tag_id = wt.id
+            WHERE pt.product_id = $1
+            ORDER BY wt.tag_name ASC
+        """
+        tags_result = await db.fetch_all(query_tags, product_id)
+        tags = [dict(t) for t in tags_result]
+
+        # Respuesta final unificada
+        return {
+            **dict(product),
+            "tags": tags,
+            "stock_web": int(web_stock),
+            "images": images,
+            "variants": [dict(v) for v in variants]
+        }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching product by slug {slug}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener el producto: {str(e)}"
-        )
-
+        logger.error(f"Error en slug {slug}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- IMAGE MANAGEMENT ENDPOINTS ---
 

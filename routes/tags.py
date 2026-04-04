@@ -23,7 +23,7 @@ class TagCreate(BaseModel):
 
 # ─── Endpoints ─────────────────────────────────────────────────
 
-@router.get("/", dependencies=[Depends(require_admin)])
+@router.get("/")
 async def list_tags():
     """
     Lista todos los tags disponibles con la cantidad de productos por tag.

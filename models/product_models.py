@@ -196,6 +196,7 @@ class ProductAllResponse(BaseModel):
     id: int
     product_name: str
     provider_code: Optional[str] = None
+    descripcion_web: Optional[str] = None
     sale_price: Optional[float] = None
     en_tienda_online: bool = False
     group_id: Optional[int] = None
@@ -231,12 +232,14 @@ class ProductVariantInfo(BaseModel):
     color: str
     stock: int
     barcode: Optional[str] = None
+    color_hex: Optional[str] = None
 
 class ProductInfoMatrix(BaseModel):
     """Model for the product info matrix endpoint."""
     id: int
     product_name: str
     description: Optional[str] = None
+    descripcion_web: Optional[str] = None
     cost: Optional[float] = None
     sale_price: Optional[float] = None
     original_price: Optional[float] = 0

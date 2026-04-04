@@ -176,6 +176,10 @@ app.include_router(payment_webhooks.router, prefix="/api/payments", tags=["Webho
 from routes import waiting_list
 app.include_router(waiting_list.router, prefix="/waiting-list", tags=["Lista de Espera"])
 
+# Import and include coupons router
+from routes import coupons
+app.include_router(coupons.router, prefix="/admin/coupons", tags=["Cupones"])
+
 # Mount static files directory for product images
 # Using shared directory that multiple backends access
 images_dir = "/home/breightend/imagenes-productos"
