@@ -2059,6 +2059,9 @@ async def get_product_by_slug(slug: str):
         logger.error(f"Error en slug {slug}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+        
+
 # --- IMAGE MANAGEMENT ENDPOINTS ---
 
 @router.post("/{product_id}/images", response_model=ProductImage, status_code=status.HTTP_201_CREATED)
