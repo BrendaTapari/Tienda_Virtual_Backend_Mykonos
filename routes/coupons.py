@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 # pero lo dejamos vacío o con el nombre necesario.
 router = APIRouter()
 
+
+def _normalize_dt(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    # Keep wall-clock time from client input; DB columns are TIMESTAMP (without tz).
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
 # ==========================================
 # DTOs / Schemas (Pydantic)
 # ==========================================
@@ -36,16 +44,20 @@ class CouponTypeResponse(BaseModel):
 
 class CouponCreate(BaseModel):
     code: str
+    description: Optional[str] = None
     type_id: int
     discount_value: float
     user_id: Optional[int] = None
+    valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     usage_limit: int = 1
+    is_active: bool = True
 
 
 class CouponResponse(BaseModel):
     id: int
     code: str
+    description: Optional[str] = None
     type_id: int
     type_name: Optional[str] = None
     discount_type: str
@@ -134,20 +146,45 @@ async def create_coupon(coupon_data: CouponCreate):
             raise HTTPException(status_code=400, detail="Coupon code already exists")
 
         query = """
-            INSERT INTO coupons (code, type_id, discount_value, user_id, valid_until, usage_limit, used_count, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6, 0, TRUE)
-            RETURNING id, code, type_id, discount_value, user_id, valid_from, valid_until, usage_limit, used_count, is_active, deactivated_at
+            INSERT INTO coupons (
+                code,
+                description,
+                type_id,
+                discount_value,
+                user_id,
+                valid_from,
+                valid_until,
+                usage_limit,
+                used_count,
+                is_active,
+                deactivated_at
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                COALESCE($6, CURRENT_TIMESTAMP),
+                $7,
+                $8,
+                0,
+                $9,
+                CASE WHEN $9 = FALSE THEN CURRENT_TIMESTAMP ELSE NULL END
+            )
+            RETURNING id, code, description, type_id, discount_value, user_id, valid_from, valid_until, usage_limit, used_count, is_active, deactivated_at
         """
         row = await db.fetch_one(
             query,
             coupon_data.code,
+            coupon_data.description,
             coupon_data.type_id,
             coupon_data.discount_value,
             coupon_data.user_id,
-            coupon_data.valid_until.replace(tzinfo=None)
-            if coupon_data.valid_until
-            else None,
+            _normalize_dt(coupon_data.valid_from),
+            _normalize_dt(coupon_data.valid_until),
             coupon_data.usage_limit,
+            coupon_data.is_active,
         )
 
         result = dict(row)
@@ -174,7 +211,7 @@ async def list_coupons(offset: int = 0, limit: int = 100):
     try:
         query = """
             SELECT 
-                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
+                c.id, c.code, c.description, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
                 t.name as type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
@@ -279,7 +316,7 @@ async def get_coupon_by_code(coupon_code: str):
         now = datetime.utcnow()
         query = """
             SELECT 
-                c.id, c.code, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
+                c.id, c.code, c.description, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
                 t.name as type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
@@ -384,6 +421,7 @@ async def used_cupon(coupon_id: int):
             RETURNING
                 id,
                 code,
+                description,
                 type_id,
                 (SELECT name FROM coupon_types WHERE id = coupons.type_id) AS type_name,
                 (SELECT discount_type FROM coupon_types WHERE id = coupons.type_id) AS discount_type,
