@@ -357,6 +357,88 @@ async def toggle_coupon_status(coupon_id: int):
         )
 
 
+@router.put(
+    "/{coupon_id}/",
+    response_model=CouponResponse,
+    dependencies=[Depends(require_admin)],
+)
+@router.put(
+    "/admin/{coupon_id}/",
+    response_model=CouponResponse,
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def update_coupon(coupon_id: int, coupon_data: CouponCreate):
+    """
+    MODIFICACIÓN: Actualiza los detalles de un cupón existente
+    """
+    try:
+        # Verificar que el cupón exista
+        existing_coupon = await db.fetch_one(
+            "SELECT id FROM coupons WHERE id = $1", coupon_id
+        )
+        if not existing_coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found")
+
+        # Verificar que el tipo exista y obtener su nombre
+        ctype = await db.fetch_one(
+            "SELECT id, name, discount_type FROM coupon_types WHERE id = $1",
+            coupon_data.type_id,
+        )
+        if not ctype:
+            raise HTTPException(status_code=404, detail="Coupon Type not found")
+
+        # Verificar que el código no exista ya en otro cupón
+        existing_code = await db.fetch_one(
+            "SELECT id FROM coupons WHERE UPPER(code) = UPPER($1) AND id != $2",
+            coupon_data.code,
+            coupon_id,
+        )
+        if existing_code:
+            raise HTTPException(status_code=400, detail="Coupon code already exists")
+
+        query = """
+            UPDATE coupons
+            SET
+                code = $1,
+                description = $2,
+                type_id = $3,
+                discount_value = $4,
+                user_id = $5,
+                valid_from = COALESCE($6, CURRENT_TIMESTAMP),
+                valid_until = $7,
+                usage_limit = $8
+            WHERE id = $9
+            RETURNING id, code, description, type_id, discount_value, user_id, valid_from, valid_until, usage_limit, used_count, is_active, deactivated_at
+        """
+        row = await db.fetch_one(
+            query,
+            coupon_data.code,
+            coupon_data.description,
+            coupon_data.type_id,
+            coupon_data.discount_value,
+            coupon_data.user_id,
+            _normalize_dt(coupon_data.valid_from),
+            _normalize_dt(coupon_data.valid_until),
+            coupon_data.usage_limit,
+            coupon_id,
+        )
+
+        result = dict(row)
+        result["type_name"] = ctype["name"]
+        result["discount_type"] = ctype["discount_type"]
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating coupon: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error updating coupon",
+        )
+
+
 @router.delete("/{coupon_id}", dependencies=[Depends(require_admin)])
 @router.delete(
     "/admin/{coupon_id}/",

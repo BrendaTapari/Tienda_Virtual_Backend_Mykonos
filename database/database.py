@@ -681,7 +681,7 @@ DATABASE_TABLES = {
             "refunded_at": "TEXT",  # Fecha y hora del reembolso
             "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",  # Fecha de creación del registro
             "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",  # Fecha de última actualización
-            "en_tienda_online": "BOOLEAN",  # Indica si se compro en la tienda lonline
+            "en_tienda_online": "BOOLEAN",  # Indica si se compro en la tienda online
             "origin": "TEXT DEFAULT 'local'", # Valores: 'local', 'web'
             "shipping_address": "TEXT",       # Dirección de envío (solo si es web)
             "shipping_status": "TEXT",        # 'pendiente', 'enviado', 'entregado'
