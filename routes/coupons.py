@@ -77,9 +77,13 @@ class CouponResponse(BaseModel):
 # ==========================================
 
 
-@router.get("/types", response_model=List[CouponTypeResponse])
 @router.get(
-    "/types/",
+    "/admin/types",
+    response_model=List[CouponTypeResponse],
+    dependencies=[Depends(require_admin)],
+)
+@router.get(
+    "/admin/types/",
     response_model=List[CouponTypeResponse],
     include_in_schema=False,
     dependencies=[Depends(require_admin)],
@@ -97,7 +101,11 @@ async def list_coupon_types(limit: int = 100, offset: int = 0):
         raise HTTPException(status_code=500, detail="Failed to fetch coupon types")
 
 
-@router.post("/types", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/admin/types",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
 async def create_coupon_type(type_data: CouponTypeCreate):
     """
     ALTA: Crea un nuevo TIPO de cupón (Regla de negocio)
@@ -124,9 +132,14 @@ async def create_coupon_type(type_data: CouponTypeCreate):
 # ==========================================
 
 
-@router.post("", response_model=CouponResponse, status_code=status.HTTP_201_CREATED)
 @router.post(
-    "/",
+    "/admin/",
+    response_model=CouponResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
+@router.post(
+    "/admin/",
     response_model=CouponResponse,
     status_code=status.HTTP_201_CREATED,
     include_in_schema=False,
@@ -209,8 +222,17 @@ async def create_coupon(coupon_data: CouponCreate):
         )
 
 
-@router.get("", response_model=List[CouponResponse])
-@router.get("/", response_model=List[CouponResponse], include_in_schema=False, dependencies=[Depends(require_admin)])
+@router.get(
+    "",
+    response_model=List[CouponResponse],
+    dependencies=[Depends(require_admin)],
+)
+@router.get(
+    "/admin/",
+    response_model=List[CouponResponse],
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
 async def list_coupons(offset: int = 0, limit: int = 100):
     """
     CONSULTA: Lista todos los cupones generados
@@ -238,8 +260,12 @@ async def list_coupons(offset: int = 0, limit: int = 100):
         raise HTTPException(status_code=500, detail="Failed to fetch coupons")
 
 
-@router.put("/{coupon_id}/toggle-status")
-@router.put("/{coupon_id}/toggle-status/", include_in_schema=False, dependencies=[Depends(require_admin)])
+@router.put("/{coupon_id}/toggle-status", dependencies=[Depends(require_admin)])
+@router.put(
+    "/admin/{coupon_id}/toggle-status/",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
 async def toggle_coupon_status(coupon_id: int):
     """
     MODIFICACIÓN / BAJA LÓGICA: Activa o desactiva un cupón
@@ -281,8 +307,12 @@ async def toggle_coupon_status(coupon_id: int):
         )
 
 
-@router.delete("/{coupon_id}")
-@router.delete("/{coupon_id}/", include_in_schema=False)
+@router.delete("/{coupon_id}", dependencies=[Depends(require_admin)])
+@router.delete(
+    "/admin/{coupon_id}/",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
 async def delete_coupon(coupon_id: int):
     """
     BAJA FÍSICA: Elimina un cupón permanentemente (solo usar si hubo error al crearlo)
