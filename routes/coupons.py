@@ -11,6 +11,7 @@ import logging
 
 from config.db_connection import db
 from utils.auth import require_admin
+from utils.tasks import deactivate_expired_coupons
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,9 @@ async def list_coupons(
     Lista cupones con filtro de estado.
     """
     try:
+        # Extra safety layer: keep state synchronized when admin lists coupons.
+        await deactivate_expired_coupons()
+
         query = """
             SELECT
                 c.id, c.code, c.description, c.type_id, c.discount_value, c.user_id,
@@ -259,7 +263,10 @@ async def list_coupons(
                 (
                     $3 = 'all' AND
                     (
-                        c.is_active = TRUE
+                        (
+                            c.is_active = TRUE
+                            AND (c.valid_until IS NULL OR c.valid_until >= CURRENT_TIMESTAMP)
+                        )
                         OR (
                             c.is_active = FALSE
                             AND c.deactivated_at IS NOT NULL
@@ -267,13 +274,31 @@ async def list_coupons(
                         )
                     )
                 )
-                OR ($3 = 'active' AND c.is_active = TRUE)
-                OR ($3 = 'inactive' AND c.is_active = FALSE)
+                OR (
+                    $3 = 'active'
+                    AND c.is_active = TRUE
+                    AND (c.valid_until IS NULL OR c.valid_until >= CURRENT_TIMESTAMP)
+                )
+                OR (
+                    $3 = 'inactive'
+                    AND (
+                        c.is_active = FALSE
+                        OR (c.valid_until IS NOT NULL AND c.valid_until < CURRENT_TIMESTAMP)
+                    )
+                )
                 OR (
                     $3 = 'recent_inactive'
-                    AND c.is_active = FALSE
-                    AND c.deactivated_at IS NOT NULL
-                    AND c.deactivated_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
+                    AND (
+                        (
+                            c.is_active = FALSE
+                            AND c.deactivated_at IS NOT NULL
+                            AND c.deactivated_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
+                        )
+                        OR (
+                            c.valid_until IS NOT NULL
+                            AND c.valid_until < CURRENT_TIMESTAMP
+                        )
+                    )
                 )
             ORDER BY c.id DESC
             LIMIT $1 OFFSET $2
