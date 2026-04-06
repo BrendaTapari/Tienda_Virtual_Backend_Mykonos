@@ -3,9 +3,9 @@ Coupons routes
 Handles CRUD (ABMC) operations for discount coupons and coupon types
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 import logging
 
@@ -228,32 +228,57 @@ async def create_coupon(coupon_data: CouponCreate):
     dependencies=[Depends(require_admin)],
 )
 @router.get(
+    "/admin",
+    response_model=List[CouponResponse],
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+@router.get(
     "/admin/",
     response_model=List[CouponResponse],
     include_in_schema=False,
     dependencies=[Depends(require_admin)],
 )
-async def list_coupons(offset: int = 0, limit: int = 100):
+async def list_coupons(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    status: Literal["all", "active", "inactive", "recent_inactive"] = "all",
+):
     """
-    CONSULTA: Lista todos los cupones generados
+    Lista cupones con filtro de estado.
     """
     try:
         query = """
-            SELECT 
-                c.id, c.code, c.description, c.type_id, c.discount_value, c.user_id, c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
-                t.name as type_name, t.discount_type
+            SELECT
+                c.id, c.code, c.description, c.type_id, c.discount_value, c.user_id,
+                c.valid_from, c.valid_until, c.usage_limit, c.used_count, c.is_active, c.deactivated_at,
+                t.name AS type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
-            WHERE c.is_active = TRUE
-               OR (
-                    c.is_active = FALSE
+            WHERE
+                (
+                    $3 = 'all' AND
+                    (
+                        c.is_active = TRUE
+                        OR (
+                            c.is_active = FALSE
+                            AND c.deactivated_at IS NOT NULL
+                            AND c.deactivated_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
+                        )
+                    )
+                )
+                OR ($3 = 'active' AND c.is_active = TRUE)
+                OR ($3 = 'inactive' AND c.is_active = FALSE)
+                OR (
+                    $3 = 'recent_inactive'
+                    AND c.is_active = FALSE
                     AND c.deactivated_at IS NOT NULL
                     AND c.deactivated_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
-               )
+                )
             ORDER BY c.id DESC
             LIMIT $1 OFFSET $2
         """
-        rows = await db.fetch_all(query, limit, offset)
+        rows = await db.fetch_all(query, limit, offset, status)
         return [dict(row) for row in rows]
     except Exception as e:
         logger.error(f"Error fetching coupons: {str(e)}")
