@@ -10,6 +10,7 @@ from datetime import datetime
 import logging
 
 from config.db_connection import db
+from utils.auth import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,12 @@ class CouponResponse(BaseModel):
 
 
 @router.get("/types", response_model=List[CouponTypeResponse])
-@router.get("/types/", response_model=List[CouponTypeResponse], include_in_schema=False)
+@router.get(
+    "/types/",
+    response_model=List[CouponTypeResponse],
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
 async def list_coupon_types(limit: int = 100, offset: int = 0):
     """
     CONSULTA: Lista todas las reglas/tipos de cupón disponibles
@@ -124,6 +130,7 @@ async def create_coupon_type(type_data: CouponTypeCreate):
     response_model=CouponResponse,
     status_code=status.HTTP_201_CREATED,
     include_in_schema=False,
+    dependencies=[Depends(require_admin)],
 )
 async def create_coupon(coupon_data: CouponCreate):
     """
@@ -140,7 +147,7 @@ async def create_coupon(coupon_data: CouponCreate):
 
         # Verificar que el código no exista ya
         existing = await db.fetch_one(
-            "SELECT id FROM coupons WHERE code = $1", coupon_data.code
+            "SELECT id FROM coupons WHERE UPPER(code) = UPPER($1)", coupon_data.code
         )
         if existing:
             raise HTTPException(status_code=400, detail="Coupon code already exists")
@@ -203,7 +210,7 @@ async def create_coupon(coupon_data: CouponCreate):
 
 
 @router.get("", response_model=List[CouponResponse])
-@router.get("/", response_model=List[CouponResponse], include_in_schema=False)
+@router.get("/", response_model=List[CouponResponse], include_in_schema=False, dependencies=[Depends(require_admin)])
 async def list_coupons(offset: int = 0, limit: int = 100):
     """
     CONSULTA: Lista todos los cupones generados
@@ -232,7 +239,7 @@ async def list_coupons(offset: int = 0, limit: int = 100):
 
 
 @router.put("/{coupon_id}/toggle-status")
-@router.put("/{coupon_id}/toggle-status/", include_in_schema=False)
+@router.put("/{coupon_id}/toggle-status/", include_in_schema=False, dependencies=[Depends(require_admin)])
 async def toggle_coupon_status(coupon_id: int):
     """
     MODIFICACIÓN / BAJA LÓGICA: Activa o desactiva un cupón
@@ -320,7 +327,7 @@ async def get_coupon_by_code(coupon_code: str):
                 t.name as type_name, t.discount_type
             FROM coupons c
             LEFT JOIN coupon_types t ON c.type_id = t.id
-            WHERE c.code = $1
+            WHERE UPPER(c.code) = UPPER($1)
         """
         row = await db.fetch_one(query, coupon_code)
         if not row:
