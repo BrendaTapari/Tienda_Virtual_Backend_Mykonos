@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 import asyncio
-from utils.tasks import deactivate_expired_discounts
+from utils.tasks import deactivate_expired_discounts, deactivate_expired_coupons
 from utils.order_tasks import cancel_expired_orders
 from utils.notification_tasks import cleanup_old_notifications_task
 
@@ -46,12 +46,13 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 await deactivate_expired_discounts()
+                await deactivate_expired_coupons()
                 # Run every hour (3600 seconds)
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in discount cleanup task: {e}")
+                logger.error(f"Error in discount/coupon cleanup task: {e}")
                 await asyncio.sleep(60)  # Retry after 1 min on error
 
     async def run_periodic_order_cancellation():

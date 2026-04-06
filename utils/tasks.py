@@ -3,6 +3,7 @@ from config.db_connection import db
 
 logger = logging.getLogger(__name__)
 
+
 async def deactivate_expired_discounts():
     """
     Deactivates discounts that have passed their end_date.
@@ -23,17 +24,56 @@ async def deactivate_expired_discounts():
             WHERE is_active = TRUE 
             AND end_date < CURRENT_TIMESTAMP
         """
-        
+
         result = await db.execute(query)
-        
+
         # asyncpg execute returns a string like "UPDATE 5"
         if result and result.startswith("UPDATE"):
             try:
                 count = int(result.split(" ")[1])
                 if count > 0:
-                    logger.info(f"Background Task: Deactivated {count} expired discounts.")
+                    logger.info(
+                        f"Background Task: Deactivated {count} expired discounts."
+                    )
             except (IndexError, ValueError):
                 pass
-                
+
     except Exception as e:
         logger.error(f"Error execution discount cleanup task: {e}")
+
+
+async def deactivate_expired_coupons():
+    """
+    Deactivates coupons that have passed valid_until.
+    Runs a SQL update and logs the result.
+    This should be run periodically.
+    """
+    try:
+        if not db.pool:
+            return
+
+        query = """
+            UPDATE coupons
+            SET
+                is_active = FALSE,
+                deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+            WHERE
+                is_active = TRUE
+                AND valid_until IS NOT NULL
+                AND valid_until < CURRENT_TIMESTAMP
+        """
+
+        result = await db.execute(query)
+
+        if result and result.startswith("UPDATE"):
+            try:
+                count = int(result.split(" ")[1])
+                if count > 0:
+                    logger.info(
+                        f"Background Task: Deactivated {count} expired coupons."
+                    )
+            except (IndexError, ValueError):
+                pass
+
+    except Exception as e:
+        logger.error(f"Error execution coupon cleanup task: {e}")
