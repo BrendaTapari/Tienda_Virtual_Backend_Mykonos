@@ -689,6 +689,13 @@ DATABASE_TABLES = {
             "web_user_id": "INTEGER", # Para vincular con WEB_USERS
             "shipping_cost": "REAL DEFAULT 0", # Por si cobras envío aparte
             "delivery_type": "TEXT DEFAULT 'envio'", # Valores sugeridos: 'domicilio', 'sucursal' (retiro)
+            # --- Campos de cupón (snapshot histórico al momento de la compra) ---
+            "coupon_id": "INTEGER",          # FK a coupons (nullable, SET NULL si se borra el cupón)
+            "coupon_code": "TEXT",            # Código del cupón aplicado (texto histórico)
+            "coupon_discount_type": "TEXT",   # Tipo: 'percentage', 'fixed', 'free_shipping'
+            "coupon_discount_value": "REAL",  # Valor bruto del cupón (ej: 15 para 15%, 500 para $500 fijo)
+            "coupon_discount_amount": "REAL DEFAULT 0", # Monto real ahorrado por el cupón
+            "original_total": "REAL",         # Total antes de aplicar el cupón
         },
         "foreign_keys": [
             {  # Relación con tabla de clientes (entidades)
@@ -1164,42 +1171,4 @@ DATABASE_TABLES = {
             },
         ],
     },
-    TABLES.COUPON_TYPES: {
-        "columns": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único del tipo de cupón.
-            "name": "TEXT NOT NULL",  # Nombre descriptivo del tipo (ej: 'Descuento 20%', 'Envío gratis')
-            "discount_type": "TEXT NOT NULL",  # Tipo de descuento: 'percentage', 'fixed', 'free_shipping'
-            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        }
-    },
-    TABLES.COUPONS: {
-        "columns": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # Identificador único del cupón.
-            "code": "TEXT NOT NULL UNIQUE",  # Código del cupón (único, case-insensitive por convención).
-            "type_id": "INTEGER NOT NULL",  # FK al tipo de cupón que determina la regla de descuento.
-            "discount_value": "numeric(10,2) DEFAULT 0",  # El valor a descontar en cada instancia.
-            "user_id": "INTEGER",  # FK a web_users; NULL = cupón global, valor = cupón exclusivo para ese usuario.
-            "valid_from": "TIMESTAMP NOT NULL",  # Fecha/hora de inicio de validez del cupón.
-            "valid_until": "TIMESTAMP NOT NULL",  # Fecha/hora de expiración del cupón.
-            "usage_limit": "INTEGER NOT NULL DEFAULT 1",  # Cantidad máxima de usos permitidos.
-            "used_count": "INTEGER NOT NULL DEFAULT 0",  # Cantidad de veces que ya fue utilizado.
-            "is_active": "BOOLEAN NOT NULL DEFAULT 1",  # Indica si el cupón está activo y puede ser aplicado.
-            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        },
-        "foreign_keys": [
-            {
-                "column": "type_id",
-                "reference_table": TABLES.COUPON_TYPES,
-                "reference_column": "id",
-                "export_column_name": "name",
-            },
-            {
-                "column": "user_id",
-                "reference_table": TABLES.WEB_USERS,
-                "reference_column": "id",
-                "export_column_name": "username",
-            },
-        ],
-    },
-
 }

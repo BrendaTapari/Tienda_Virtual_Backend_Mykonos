@@ -455,8 +455,8 @@ async def send_ready_for_pickup_email(
     email: str, 
     username: str, 
     order_id: int, 
-    pickup_address: str = "San Luis 887, Concordia, Entre Ríos",
-    schedule: str = "Lunes a Sábados de 9:00 a 12:30 y de 16:30 a 20:30",
+    pickup_address: str = "Consultar dirección con la tienda",
+    schedule: str = "Consultar horarios con la tienda",
     base_url: str = FRONTEND_URL
 ):
     """

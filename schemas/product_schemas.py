@@ -15,7 +15,10 @@ class VarianteUpdateInput(BaseModel):
 
 class ProductoUpdateSchema(BaseModel):
     nombre: Optional[str] = None
-    descripcion: Optional[str] = None
+    descripcion: Optional[str] = None          # descripcion_web
+    alt_text: Optional[str] = None             # texto alternativo de imagen (SEO)
+    base_description: Optional[str] = None     # descripción larga / ficha técnica base
+    technical_details: Optional[str] = None    # detalles técnicos del producto
     precio_web: Optional[float] = None
     en_tienda_online: Optional[bool] = None
     variantes: Optional[List[VarianteUpdateInput]] = []

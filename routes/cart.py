@@ -67,28 +67,34 @@ async def get_cart(authorization: Optional[str] = Header(None)):
                 wci.quantity,
                 p.precio_web as unit_price,
                 (wci.quantity * p.precio_web) as subtotal,
-                COALESCE((
-                    -- First try: variant_id is from web_variants
-                    SELECT SUM(wvba.cantidad_asignada)
-                    FROM web_variant_branch_assignment wvba
-                    WHERE wvba.variant_id = wci.variant_id
-                ), (
-                    -- Second try: variant_id is from warehouse_stock_variants, find matching web_variant
-                    SELECT SUM(wvba.cantidad_asignada)
-                    FROM warehouse_stock_variants wsv
-                    JOIN web_variants wv ON wv.product_id = wsv.product_id 
-                        AND wv.size_id = wsv.size_id 
-                        AND wv.color_id = wsv.color_id
-                    JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
-                    WHERE wsv.id = wci.variant_id
-                ), 0) as stock_available
+                -- Stock efectivo = LEAST(stock web publicado, stock fisico ESTA variante)
+                -- Filtra por product_id + size_id + color_id de esta variante especifica
+                -- IS NOT DISTINCT FROM maneja NULL correctamente (NULL = NULL es TRUE)
+                GREATEST(0, LEAST(
+                    -- Lado 1: stock publicado en web para esta variante
+                    COALESCE(
+                        (SELECT wv2.displayed_stock
+                         FROM web_variants wv2
+                         WHERE wv2.id = wci.variant_id AND wv2.is_active = TRUE),
+                        0
+                    ),
+                    -- Lado 2: stock fisico real de ESTA variante (mismo size+color) en todos los depositos
+                    COALESCE(
+                        (SELECT SUM(wsv_p.quantity)
+                         FROM web_variants wv_p
+                         JOIN warehouse_stock_variants wsv_p
+                             ON wsv_p.product_id = wv_p.product_id
+                             AND wsv_p.size_id IS NOT DISTINCT FROM wv_p.size_id
+                             AND wsv_p.color_id IS NOT DISTINCT FROM wv_p.color_id
+                         WHERE wv_p.id = wci.variant_id),
+                        0
+                    )
+                )) as stock_available
             FROM web_cart_items wci
             INNER JOIN products p ON wci.product_id = p.id
-            -- Try to join with web_variants
             LEFT JOIN web_variants wv ON wci.variant_id = wv.id
             LEFT JOIN sizes s_web ON wv.size_id = s_web.id
             LEFT JOIN colors c_web ON wv.color_id = c_web.id
-            -- If not found, try warehouse_stock_variants
             LEFT JOIN warehouse_stock_variants wsv ON wci.variant_id = wsv.id
             LEFT JOIN sizes s_warehouse ON wsv.size_id = s_warehouse.id
             LEFT JOIN colors c_warehouse ON wsv.color_id = c_warehouse.id
@@ -165,27 +171,31 @@ async def add_to_cart(item_data: AddToCartRequest, authorization: Optional[str] 
                 detail="Este producto no está disponible en la tienda online"
             )
         
-        # Validate variant exists and has web stock assigned
-        # Try to get web stock - handles both web_variants and warehouse_stock_variants IDs
+        # Validate variant exists y stock efectivo = LEAST(web, fisico real)
+        # Garantia: nunca se puede vender mas de lo que existe fisicamente
         variant = await db.fetch_one(
             """
             SELECT 
-                COALESCE(
-                    -- First try: variant_id is from web_variants
-                    (SELECT SUM(wvba.cantidad_asignada)
-                     FROM web_variant_branch_assignment wvba
-                     WHERE wvba.variant_id = $1),
-                    -- Second try: variant_id is from warehouse_stock_variants
-                    (SELECT SUM(wvba.cantidad_asignada)
-                     FROM warehouse_stock_variants wsv
-                     JOIN web_variants wv ON wv.product_id = wsv.product_id 
-                         AND wv.size_id = wsv.size_id 
-                         AND wv.color_id = wsv.color_id
-                     JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
-                     WHERE wsv.id = $1),
-                    0
-                ) as stock_available,
-                -- Check if variant exists in either table
+                GREATEST(0, LEAST(
+                    -- Stock publicado en web para esta variante
+                    COALESCE(
+                        (SELECT wv.displayed_stock
+                         FROM web_variants wv
+                         WHERE wv.id = $1 AND wv.is_active = TRUE),
+                        0
+                    ),
+                    -- Stock fisico de ESTA variante (mismo product+size+color, NULL-safe)
+                    COALESCE(
+                        (SELECT SUM(wsv2.quantity)
+                         FROM web_variants wv3
+                         JOIN warehouse_stock_variants wsv2
+                             ON wsv2.product_id = wv3.product_id
+                             AND wsv2.size_id IS NOT DISTINCT FROM wv3.size_id
+                             AND wsv2.color_id IS NOT DISTINCT FROM wv3.color_id
+                         WHERE wv3.id = $1),
+                        0
+                    )
+                )) as stock_available,
                 CASE 
                     WHEN EXISTS (SELECT 1 FROM web_variants WHERE id = $1 AND product_id = $2) THEN true
                     WHEN EXISTS (SELECT 1 FROM warehouse_stock_variants WHERE id = $1 AND product_id = $2) THEN true
@@ -195,6 +205,7 @@ async def add_to_cart(item_data: AddToCartRequest, authorization: Optional[str] 
             item_data.variant_id,
             item_data.product_id
         )
+
         
         if not variant or not variant['variant_exists']:
             logger.warning(f"Add to cart failed: Variant {item_data.variant_id} for product {item_data.product_id} not found")
@@ -330,24 +341,29 @@ async def update_cart_item(
                 detail="Item no encontrado en tu carrito"
             )
         
-        # Check web stock - handles both web_variants and warehouse_stock_variants IDs
+        # Stock efectivo = LEAST(displayed_stock, stock fisico real)
         variant = await db.fetch_one(
             """
-            SELECT COALESCE(
-                -- First try: variant_id is from web_variants
-                (SELECT SUM(wvba.cantidad_asignada)
-                 FROM web_variant_branch_assignment wvba
-                 WHERE wvba.variant_id = $1),
-                -- Second try: variant_id is from warehouse_stock_variants
-                (SELECT SUM(wvba.cantidad_asignada)
-                 FROM warehouse_stock_variants wsv
-                 JOIN web_variants wv ON wv.product_id = wsv.product_id 
-                     AND wv.size_id = wsv.size_id 
-                     AND wv.color_id = wsv.color_id
-                 JOIN web_variant_branch_assignment wvba ON wvba.variant_id = wv.id
-                 WHERE wsv.id = $1),
-                0
-            ) as stock_available
+            SELECT GREATEST(0, LEAST(
+                -- Stock publicado en web para esta variante
+                COALESCE(
+                    (SELECT wv.displayed_stock
+                     FROM web_variants wv
+                     WHERE wv.id = $1 AND wv.is_active = TRUE),
+                    0
+                ),
+                -- Stock fisico de ESTA variante especifica (NULL-safe)
+                COALESCE(
+                    (SELECT SUM(wsv2.quantity)
+                     FROM web_variants wv3
+                     JOIN warehouse_stock_variants wsv2
+                         ON wsv2.product_id = wv3.product_id
+                         AND wsv2.size_id IS NOT DISTINCT FROM wv3.size_id
+                         AND wsv2.color_id IS NOT DISTINCT FROM wv3.color_id
+                     WHERE wv3.id = $1),
+                    0
+                )
+            )) as stock_available
             """,
             item['variant_id']
         )

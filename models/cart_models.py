@@ -101,14 +101,26 @@ class CreateOrderRequest(BaseModel):
     departamento: Optional[str] = Field(None, description="Apartment")
     codigo_postal: Optional[str] = Field(None, description="Zip Code")
     phone: Optional[str] = Field(None, description="Customer phone number")
-    
+
+    # Coupon fields (optional – sent by frontend when customer applied a coupon)
+    coupon_code: Optional[str] = Field(None, description="Código del cupón aplicado por el cliente")
+    coupon_id: Optional[int] = Field(None, description="ID interno del cupón (para incrementar used_count)")
+    coupon_discount_type: Optional[str] = Field(None, description="Tipo de descuento: 'percentage', 'fixed', 'free_shipping'")
+    coupon_discount_value: Optional[float] = Field(None, description="Valor bruto del cupón (ej: 15 para 15%, 500 para $500 fijo)")
+    coupon_discount_amount: Optional[float] = Field(None, description="Monto real descontado en la moneda de la venta")
+    original_total: Optional[float] = Field(None, description="Total antes de aplicar el cupón")
+
     class Config:
         json_schema_extra = {
             "example": {
                 "shipping_address": "Av. Corrientes 1234, Piso 5 Depto B, CABA, Buenos Aires",
                 "delivery_type": "envio",
                 "shipping_cost": 500.00,
-                "notes": "Dejar en portería si no hay nadie. Horario preferido: 14-18hs"
+                "notes": "Dejar en portería si no hay nadie. Horario preferido: 14-18hs",
+                "coupon_code": "SUMMER10",
+                "coupon_discount_type": "percentage",
+                "coupon_discount_value": 10,
+                "coupon_discount_amount": 350.0
             }
         }
 

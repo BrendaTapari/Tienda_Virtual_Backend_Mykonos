@@ -494,7 +494,77 @@ async def _create_order_impl(
                 )
             
             total = subtotal + final_shipping_cost
-            
+
+            # ---------------------------------------------------------------
+            # COUPON PROCESSING (optional – only runs if client sends a code)
+            # ---------------------------------------------------------------
+            coupon_id = None
+            coupon_code = None
+            coupon_discount_type = None
+            coupon_discount_value = None
+            coupon_discount_amount = 0.0
+            original_total = None
+
+            if order_data.coupon_code:
+                # Verify the coupon still exists and is active in the DB
+                coupon_row = await conn.fetchrow(
+                    """
+                    SELECT c.id, c.code, c.discount_value, c.usage_limit, c.used_count, c.is_active,
+                           c.valid_from, c.valid_until,
+                           t.discount_type
+                    FROM coupons c
+                    JOIN coupon_types t ON c.type_id = t.id
+                    WHERE UPPER(c.code) = UPPER($1)
+                    """,
+                    order_data.coupon_code
+                )
+
+                if not coupon_row:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"El cupón '{order_data.coupon_code}' no existe o no es válido."
+                    )
+
+                if not coupon_row['is_active']:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="El cupón ya no está activo."
+                    )
+
+                if coupon_row['used_count'] >= coupon_row['usage_limit']:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="El cupón ya alcanzó su límite de usos."
+                    )
+
+                # Capture snapshot fields
+                coupon_id = coupon_row['id']
+                coupon_code = coupon_row['code']
+                coupon_discount_type = coupon_row['discount_type']
+                coupon_discount_value = float(coupon_row['discount_value'])
+
+                # original_total = subtotal + shipping BEFORE coupon
+                original_total = total
+
+                # Use the pre-calculated amount from the frontend if provided;
+                # otherwise compute it here as a safety net.
+                if order_data.coupon_discount_amount is not None:
+                    coupon_discount_amount = float(order_data.coupon_discount_amount)
+                else:
+                    dtype = coupon_discount_type
+                    if dtype == 'percentage':
+                        coupon_discount_amount = round(subtotal * coupon_discount_value / 100, 2)
+                    elif dtype == 'fixed':
+                        coupon_discount_amount = min(coupon_discount_value, subtotal)
+                    elif dtype == 'free_shipping':
+                        coupon_discount_amount = final_shipping_cost
+                    else:
+                        coupon_discount_amount = 0.0
+
+                # Apply coupon discount to final total (never go below 0)
+                total = max(0.0, total - coupon_discount_amount)
+            # ---------------------------------------------------------------
+
             # Calculate expiration time
             reservation_expires_at = await conn.fetchval(
                 f"SELECT CURRENT_TIMESTAMP + INTERVAL '{RESERVATION_MINUTES} minutes'"
@@ -519,7 +589,6 @@ async def _create_order_impl(
                     # Fallback for pickup or if no address provided (should be validated earlier if required)
                     shipping_address = "Dirección no provista" if order_data.delivery_type == 'envio' else "Retiro en sucursal"
 
-            # Create sale record with reservation expiration
             sale = await conn.fetchrow(
                 """
                 INSERT INTO sales (
@@ -541,26 +610,40 @@ async def _create_order_impl(
                     notes,
                     reservation_expires_at,
                     payment_method,
+                    coupon_id,
+                    coupon_code,
+                    coupon_discount_type,
+                    coupon_discount_value,
+                    coupon_discount_amount,
+                    original_total,
                     created_at,
                     updated_at
                 )
-                VALUES ($1, 1, 1, $2, CURRENT_TIMESTAMP, $3, 0, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES ($1, 1, 1, $2, CURRENT_TIMESTAMP, $3, 0, $14, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $15, $16, $17, $18, $19, $20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 RETURNING id, sale_date, subtotal, total, status, shipping_status, reservation_expires_at
                 """,
-                current_user['id'],
-                order_data.branch_id or 1,  # Use provided branch_id or default to 1 (Main/Concordia?)
-                subtotal,
-                total,
-                'Pendiente',  # Status pending until payment is confirmed
-                'web',
-                shipping_address,
-                'pendiente',
-                final_shipping_cost,
-                order_data.delivery_type,
-                order_data.notes,
-                reservation_expires_at,
-                order_data.payment_method
+                current_user['id'],           # $1  web_user_id
+                order_data.branch_id or 1,    # $2  storage_id
+                subtotal,                      # $3  subtotal
+                total,                         # $4  total (ya con descuento del cupón)
+                'Pendiente',                   # $5  status
+                'web',                         # $6  origin
+                shipping_address,              # $7  shipping_address
+                'pendiente',                   # $8  shipping_status
+                final_shipping_cost,           # $9  shipping_cost
+                order_data.delivery_type,      # $10 delivery_type
+                order_data.notes,              # $11 notes
+                reservation_expires_at,        # $12 reservation_expires_at
+                order_data.payment_method,     # $13 payment_method
+                coupon_discount_amount,        # $14 discount (campo general de descuento)
+                coupon_id,                     # $15 coupon_id
+                coupon_code,                   # $16 coupon_code
+                coupon_discount_type,          # $17 coupon_discount_type
+                coupon_discount_value,         # $18 coupon_discount_value
+                coupon_discount_amount,        # $19 coupon_discount_amount
+                original_total,                # $20 original_total
             )
+
             
             sale_id = sale['id']
             
@@ -663,6 +746,31 @@ async def _create_order_impl(
             #     "DELETE FROM web_cart_items WHERE cart_id = $1",
             #     cart['id']
             # )
+
+            # ---------------------------------------------------------------
+            # COUPON: increment used_count atomically inside the transaction
+            # ---------------------------------------------------------------
+            if coupon_id:
+                await conn.execute(
+                    """
+                    UPDATE coupons
+                    SET
+                        used_count = used_count + 1,
+                        is_active = CASE
+                            WHEN used_count + 1 >= usage_limit THEN FALSE
+                            ELSE is_active
+                        END,
+                        deactivated_at = CASE
+                            WHEN used_count + 1 >= usage_limit
+                            THEN COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+                            ELSE deactivated_at
+                        END
+                    WHERE id = $1
+                    """,
+                    coupon_id
+                )
+            # ---------------------------------------------------------------
+
             
             # Prepare tracking link
             tracking_link = f"{FRONTEND_URL}/order-tracking/{sale_id}"
@@ -682,7 +790,15 @@ async def _create_order_impl(
                 'shipping_address': shipping_address,
                 'delivery_type': order_data.delivery_type,
                 'notes': order_data.notes,
-                'items': order_items
+                'items': order_items,
+                # Cupón aplicado (None si no se usó ninguno)
+                'coupon': {
+                    'code': coupon_code,
+                    'discount_type': coupon_discount_type,
+                    'discount_value': coupon_discount_value,
+                    'discount_amount': coupon_discount_amount,
+                    'original_total': original_total,
+                } if coupon_id else None,
             }
             
             return {

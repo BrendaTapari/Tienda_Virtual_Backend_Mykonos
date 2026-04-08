@@ -196,6 +196,7 @@ async def get_all_products_info(product_id: int):
                 p.id,
                 p.product_name,
                 p.description,
+                p.descripcion_web,
                 p.cost,
                 p.sale_price,
                 p.original_price,
@@ -272,6 +273,7 @@ async def get_all_products_info(product_id: int):
             "id": product["id"],
             "product_name": product["product_name"],
             "description": product["description"],
+            "descripcion_web": product["descripcion_web"],
             "cost": product["cost"],
             "sale_price": product["sale_price"],
             "original_price": product["original_price"],
@@ -961,6 +963,21 @@ async def update_product(product_id: int, payload: ProductoUpdateSchema):
                 params.append(payload.descripcion)
                 param_count += 1
 
+            if payload.alt_text is not None:
+                update_fields.append(f"alt_text = ${param_count}")
+                params.append(payload.alt_text)
+                param_count += 1
+
+            if payload.base_description is not None:
+                update_fields.append(f"base_description = ${param_count}")
+                params.append(payload.base_description)
+                param_count += 1
+
+            if payload.technical_details is not None:
+                update_fields.append(f"technical_details = ${param_count}")
+                params.append(payload.technical_details)
+                param_count += 1
+
             if payload.precio_web is not None:
                 update_fields.append(f"precio_web = ${param_count}")
                 params.append(payload.precio_web)
@@ -983,6 +1000,7 @@ async def update_product(product_id: int, payload: ProductoUpdateSchema):
                           original_price, discount_percentage, discount_amount,
                           has_discount, comments, state, 
                           en_tienda_online, nombre_web, descripcion_web, slug, precio_web,
+                          alt_text, base_description, technical_details,
                           creation_date, last_modified_date, user_id
                 """,
                     *params,

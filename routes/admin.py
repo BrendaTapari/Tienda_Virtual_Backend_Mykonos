@@ -512,12 +512,23 @@ async def update_order_status(order_id: int, status_data: UpdateOrderStatus):
     Requires: Admin authentication
     """
     try:
-        # Check if order exists and get user info
+        # Check if order exists and get user info + branch address (for pickup email)
         order = await db.fetch_one(
             """
-            SELECT s.id, wu.email, wu.username, s.shipping_address, s.delivery_type 
+            SELECT 
+                s.id,
+                s.storage_id,
+                s.delivery_type,
+                wu.email,
+                wu.username,
+                s.shipping_address,
+                s.delivery_type,
+                st.direccion  AS branch_address,
+                st.sucursal   AS branch_name,
+                st.horarios   AS branch_schedule
             FROM sales s
             LEFT JOIN web_users wu ON s.web_user_id = wu.id
+            LEFT JOIN storage st ON s.storage_id = st.id
             WHERE s.id = $1
             """,
             order_id
@@ -554,12 +565,24 @@ async def update_order_status(order_id: int, status_data: UpdateOrderStatus):
         # Send email if status is 'lista_para_retirar'
         if status_data.status == 'lista_para_retirar' and order['email']:
             try:
-                # Use default address or logic to determine branch address
-                # For now using default main branch address
+                # Resolve pickup address from the sale's branch (storage_id)
+                pickup_address = order['branch_address'] or "Consultar con la tienda"
+                # Include branch name in address if available
+                if order['branch_name'] and order['branch_address']:
+                    pickup_address = f"{order['branch_name']} - {order['branch_address']}"
+
+                # Use schedule from DB if present, otherwise generic fallback
+                pickup_schedule = (
+                    order['branch_schedule']
+                    or "Consultar horarios con la tienda"
+                )
+
                 await send_ready_for_pickup_email(
                     email=order['email'],
                     username=order['username'] or "Cliente",
-                    order_id=order_id
+                    order_id=order_id,
+                    pickup_address=pickup_address,
+                    schedule=pickup_schedule,
                 )
                 logger.info(f"Sent ready for pickup email to {order['email']} for order {order_id}")
             except Exception as e:
