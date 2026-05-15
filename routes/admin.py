@@ -239,7 +239,7 @@ async def get_all_orders(
     """
     try:
         # Base WHERE clauses
-        filters = []
+        filters = ["s.origin = 'web'"]
         params = []
         param_count = 1
         
@@ -405,7 +405,7 @@ async def get_order_details(order_id: int):
                 wu.email as customer_email
             FROM sales s
             LEFT JOIN web_users wu ON s.web_user_id = wu.id
-            WHERE s.id = $1
+            WHERE s.id = $1 AND s.origin = 'web'
             """,
             order_id
         )
@@ -529,7 +529,7 @@ async def update_order_status(order_id: int, status_data: UpdateOrderStatus):
             FROM sales s
             LEFT JOIN web_users wu ON s.web_user_id = wu.id
             LEFT JOIN storage st ON s.storage_id = st.id
-            WHERE s.id = $1
+            WHERE s.id = $1 AND s.origin = 'web'
             """,
             order_id
         )
@@ -631,16 +631,16 @@ async def get_dashboard_stats():
         products_online = await db.fetch_val("SELECT COUNT(*) FROM products WHERE en_tienda_online = TRUE")
         
         # Order statistics
-        total_orders = await db.fetch_val("SELECT COUNT(*) FROM sales")
+        total_orders = await db.fetch_val("SELECT COUNT(*) FROM sales WHERE origin = 'web'")
         orders_pending = await db.fetch_val(
-            "SELECT COUNT(*) FROM sales WHERE status = 'Completada' AND shipping_status = 'pendiente'"
+            "SELECT COUNT(*) FROM sales WHERE status = 'Completada' AND shipping_status = 'pendiente' AND origin = 'web'"
         )
         
         # Orders this month
         orders_this_month = await db.fetch_val(
             """
             SELECT COUNT(*) FROM sales 
-            WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
+            WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE) AND origin = 'web'
             """
         )
         
@@ -648,11 +648,11 @@ async def get_dashboard_stats():
         revenue_this_month = await db.fetch_val(
             """
             SELECT COALESCE(SUM(total), 0) FROM sales 
-            WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE)
+            WHERE DATE_TRUNC('month', sale_date) = DATE_TRUNC('month', CURRENT_DATE) AND origin = 'web'
             """
         )
         
-        revenue_total = await db.fetch_val("SELECT COALESCE(SUM(total), 0) FROM sales")
+        revenue_total = await db.fetch_val("SELECT COALESCE(SUM(total), 0) FROM sales WHERE origin = 'web'")
         
         return {
             "total_users": total_users or 0,

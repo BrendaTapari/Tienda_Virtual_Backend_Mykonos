@@ -110,7 +110,7 @@ async def get_my_purchases(authorization: Optional[str] = Header(None)):
                 s.notes,
                 s.origin
             FROM sales s
-            WHERE s.web_user_id = $1
+            WHERE s.web_user_id = $1 AND s.origin = 'web'
             ORDER BY s.sale_date DESC
             """,
             current_user['id']
@@ -224,7 +224,7 @@ async def get_purchase_detail(
                 s.created_at,
                 s.updated_at
             FROM sales s
-            WHERE s.id = $1 AND s.web_user_id = $2
+            WHERE s.id = $1 AND s.web_user_id = $2 AND s.origin = 'web'
             """,
             purchase_id,
             current_user['id']

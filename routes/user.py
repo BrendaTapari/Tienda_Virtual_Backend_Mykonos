@@ -999,7 +999,7 @@ async def get_user_activity(user_id: int):
                 s.delivery_type,
                 s.notes
             FROM sales s
-            WHERE s.web_user_id = $1
+            WHERE s.web_user_id = $1 AND s.origin = 'web'
             ORDER BY s.sale_date DESC
             """,
             user_id
@@ -1022,7 +1022,7 @@ async def get_user_activity(user_id: int):
                 s.sale_date as order_date
             FROM sales_detail sd
             JOIN sales s ON s.id = sd.sale_id
-            WHERE s.web_user_id = $1
+            WHERE s.web_user_id = $1 AND s.origin = 'web'
             ORDER BY s.sale_date DESC, sd.id
             """,
             user_id
