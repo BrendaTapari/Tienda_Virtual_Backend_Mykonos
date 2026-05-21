@@ -63,39 +63,9 @@ async def get_payment_status(payment_request_id: str):
         else:
             status_name = str(status_obj).upper()
             
-        # 3. If Successful, trigger confirmation (Idempotent)
-        if status_name == 'SUCCESS_PROCESSED':
-            external_id = status_data.get('external_payment_id')
-            if external_id:
-                # Extract Order ID
-                order_id = None
-                if "order-" in external_id:
-                    try:
-                        order_id = int(external_id.split("order-")[1])
-                    except:
-                        pass
-                else:
-                    try:
-                        order_id = int(external_id)
-                    except:
-                        pass
-                
-                if order_id:
-                    from utils.order_service import confirm_order_payment
-                    # Trigger confirmation logic
-                    # We use a try/except specifically for the confirmation part so we don't fail the status check
-                    # if the order is already confirmed or something minor happens.
-                    try:
-                        await confirm_order_payment(
-                            order_id=order_id, 
-                            payment_reference=status_data.get('id', payment_request_id),
-                            payment_method="Nave (Status Check)"
-                        )
-                    except HTTPException as exc:
-                        # If 400/already processed, it's fine
-                        pass
-                    except Exception as e:
-                        print(f"Error auto-confirming order {order_id} during status check: {e}")
+        # The webhook should be the only source of truth for confirming an order payment.
+        # We DO NOT auto-confirm here, because the payment request status being 'SUCCESS_PROCESSED'
+        # only means the intention was successfully created, not that the user has actually paid.
 
         return status_data
 

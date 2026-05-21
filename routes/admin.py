@@ -308,6 +308,12 @@ async def get_all_orders(
                 s.shipping_address,
                 s.origin,
                 s.delivery_type,
+                s.coupon_id,
+                s.coupon_code,
+                s.coupon_discount_type,
+                s.coupon_discount_value,
+                s.coupon_discount_amount,
+                s.original_total,
                 COALESCE(COUNT(sd.id), 0) as items_count,
                 wu.id as customer_id,
                 wu.username as customer_username,
@@ -317,7 +323,8 @@ async def get_all_orders(
             LEFT JOIN sales_detail sd ON sd.sale_id = s.id
             {where_clause}
             GROUP BY s.id, s.sale_date, s.status, s.shipping_status, s.total, s.shipping_address, s.origin,
-                     s.delivery_type, wu.id, wu.username, wu.email
+                     s.delivery_type, s.coupon_id, s.coupon_code, s.coupon_discount_type, s.coupon_discount_value,
+                     s.coupon_discount_amount, s.original_total, wu.id, wu.username, wu.email
             ORDER BY s.sale_date DESC
             LIMIT ${param_count} OFFSET ${param_count + 1}
         """
@@ -400,6 +407,12 @@ async def get_order_details(order_id: int):
                 s.shipping_address,
                 s.external_payment_id,
                 s.notes,
+                s.coupon_id,
+                s.coupon_code,
+                s.coupon_discount_type,
+                s.coupon_discount_value,
+                s.coupon_discount_amount,
+                s.original_total,
                 wu.id as customer_id,
                 wu.username as customer_username,
                 wu.email as customer_email

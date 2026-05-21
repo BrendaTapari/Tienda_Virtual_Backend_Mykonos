@@ -108,7 +108,13 @@ async def get_my_purchases(authorization: Optional[str] = Header(None)):
                 s.payment_reference,
                 s.invoice_number,
                 s.notes,
-                s.origin
+                s.origin,
+                s.coupon_id,
+                s.coupon_code,
+                s.coupon_discount_type,
+                s.coupon_discount_value,
+                s.coupon_discount_amount,
+                s.original_total
             FROM sales s
             WHERE s.web_user_id = $1 AND s.origin = 'web'
             ORDER BY s.sale_date DESC
@@ -222,7 +228,13 @@ async def get_purchase_detail(
                 s.origin,
                 s.delivery_type,
                 s.created_at,
-                s.updated_at
+                s.updated_at,
+                s.coupon_id,
+                s.coupon_code,
+                s.coupon_discount_type,
+                s.coupon_discount_value,
+                s.coupon_discount_amount,
+                s.original_total
             FROM sales s
             WHERE s.id = $1 AND s.web_user_id = $2 AND s.origin = 'web'
             """,

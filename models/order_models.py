@@ -29,6 +29,12 @@ class OrderListResponse(BaseModel):
     shipping_address: Optional[str] = None
     origin: str = "local"
     delivery_type: Optional[str] = None
+    coupon_id: Optional[int] = None
+    coupon_code: Optional[str] = None
+    coupon_discount_type: Optional[str] = None
+    coupon_discount_value: Optional[float] = None
+    coupon_discount_amount: Optional[float] = None
+    original_total: Optional[float] = None
     
     class Config:
         from_attributes = True
@@ -93,6 +99,12 @@ class OrderDetailResponse(BaseModel):
     external_payment_id: Optional[str] = None
     tracking_history: List[TrackingHistoryItem] = []
     notes: Optional[str] = None
+    coupon_id: Optional[int] = None
+    coupon_code: Optional[str] = None
+    coupon_discount_type: Optional[str] = None
+    coupon_discount_value: Optional[float] = None
+    coupon_discount_amount: Optional[float] = None
+    original_total: Optional[float] = None
     
     class Config:
         from_attributes = True

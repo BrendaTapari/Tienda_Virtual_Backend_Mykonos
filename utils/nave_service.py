@@ -411,6 +411,13 @@ def check_payment_status(payment_check_url: str) -> dict:
         if not payment_check_url.startswith("http"):
             payment_check_url = f"https://{payment_check_url}"
             
+        # Security validation: Ensure URL belongs to allowed domains
+        from urllib.parse import urlparse
+        parsed_url = urlparse(payment_check_url)
+        allowed_domains = ["api.ranty.io", "api-sandbox.ranty.io", "api.naranja.com", "homoservices.apinaranja.com"]
+        if not any(parsed_url.netloc == domain or parsed_url.netloc.endswith(f".{domain}") for domain in allowed_domains):
+            raise ValueError(f"Invalid payment check URL domain: {parsed_url.netloc}")
+            
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
