@@ -362,7 +362,10 @@ async def send_new_order_notification_to_business(
     delivery_type: str,
     order_link: str,
     customer_notes: str = None,
-    business_email: str = "mykonosboutique733@gmail.com"
+    business_email: str = "mykonosboutique733@gmail.com",
+    items: List[dict] = None,
+    shipping_cost: float = 0.0,
+    coupon_discount: float = 0.0
 ):
     """
     Send new order notification to business email
@@ -380,6 +383,63 @@ async def send_new_order_notification_to_business(
         business_email: Business email to send notification to
     """
     delivery_type_text = "Envío a domicilio" if delivery_type == "envio" else "Retiro en sucursal"
+    
+    items_html = ""
+    if items:
+        items_html = """
+        <div style="background-color: #ffffff; padding: 20px; border-radius: 5px; margin: 20px 0; border: 1px solid #dee2e6;">
+            <h3 style="margin-top: 0; color: #2c3e50;">Productos:</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="border-bottom: 2px solid #dee2e6; text-align: left;">
+                        <th style="padding: 10px;">Producto</th>
+                        <th style="padding: 10px;">Cant.</th>
+                        <th style="padding: 10px;">Precio</th>
+                        <th style="padding: 10px;">Subtotal</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        for item in items:
+            product_name = f"{item['product_name']} ({item['size_name']}, {item['color_name']})"
+            original_price = float(item.get('original_price', item['sale_price']))
+            sale_price = float(item['sale_price'])
+            quantity = int(item['quantity'])
+            
+            price_text = f"${sale_price:,.2f}"
+            if original_price > sale_price:
+                discount_pct = float(item.get('current_discount_percentage', 0))
+                if discount_pct > 0:
+                     price_text += f"<br><small style='color: #e74c3c; text-decoration: line-through;'>${original_price:,.2f}</small> <small style='color: #27ae60;'>(-{discount_pct:g}%)</small>"
+                else:
+                     price_text += f"<br><small style='color: #e74c3c; text-decoration: line-through;'>${original_price:,.2f}</small> <small style='color: #27ae60;'>(Desc.)</small>"
+            
+            subtotal = sale_price * quantity
+            
+            items_html += f"""
+                    <tr style="border-bottom: 1px solid #dee2e6;">
+                        <td style="padding: 10px;">{product_name}</td>
+                        <td style="padding: 10px;">{quantity}</td>
+                        <td style="padding: 10px;">{price_text}</td>
+                        <td style="padding: 10px;">${subtotal:,.2f}</td>
+                    </tr>
+            """
+        items_html += """
+                </tbody>
+            </table>
+        </div>
+        """
+
+    financial_details = f"""
+        <div style="background-color: #ffffff; padding: 20px; border-radius: 5px; margin: 20px 0; border: 1px solid #dee2e6;">
+            <h3 style="margin-top: 0; color: #2c3e50;">Resumen Financiero:</h3>
+            <p><strong>Subtotal (con desc. prod):</strong> ${(total - shipping_cost + coupon_discount):,.2f}</p>
+            <p><strong>Costo de Envío:</strong> ${shipping_cost:,.2f}</p>
+    """
+    if coupon_discount > 0:
+        financial_details += f"<p><strong>Descuento por Cupón:</strong> -${coupon_discount:,.2f}</p>"
+        
+    financial_details += "</div>"
     
     html_content = f"""
     <html>
@@ -399,7 +459,7 @@ async def send_new_order_notification_to_business(
                     
                     <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #FF6B35;">
                         <h2 style="margin-top: 0; color: #FF6B35;">Pedido #{order_id}</h2>
-                        <p style="font-size: 18px; margin: 5px 0;"><strong>Total: ${total:,.2f}</strong></p>
+                        <p style="font-size: 18px; margin: 5px 0;"><strong>Total Final: ${total:,.2f}</strong></p>
                         <p style="margin: 5px 0;">Cantidad de productos: {items_count}</p>
                     </div>
                     
@@ -415,6 +475,10 @@ async def send_new_order_notification_to_business(
                         <p><strong>Tipo:</strong> {delivery_type_text}</p>
                         <p><strong>Dirección:</strong> {shipping_address}</p>
                     </div>
+
+                    {{items_html}}
+                    
+                    {{financial_details}}
 
                     <div style="background-color: #ffffff; padding: 20px; border-radius: 5px; margin: 20px 0; border: 1px solid #dee2e6;">
                         <h3 style="margin-top: 0; color: #2c3e50;">Notas del Cliente:</h3>
@@ -443,7 +507,7 @@ async def send_new_order_notification_to_business(
     message = MessageSchema(
         subject=f"Nuevo Pedido #{order_id} - ${total:,.2f}",
         recipients=[business_email],
-        body=html_content.format(LOGO_URL=LOGO_URL, order_id=order_id, total=total, items_count=items_count, customer_name=customer_name, customer_email=customer_email, customer_phone=customer_phone if customer_phone else 'No proporcionado', delivery_type_text=delivery_type_text, shipping_address=shipping_address, order_link=order_link, customer_notes=customer_notes if customer_notes else 'Sin notas adicionales'),
+        body=html_content.format(LOGO_URL=LOGO_URL, order_id=order_id, total=total, items_count=items_count, customer_name=customer_name, customer_email=customer_email, customer_phone=customer_phone if customer_phone else 'No proporcionado', delivery_type_text=delivery_type_text, shipping_address=shipping_address, order_link=order_link, customer_notes=customer_notes if customer_notes else 'Sin notas adicionales', items_html=items_html, financial_details=financial_details),
         subtype=MessageType.html,
         reply_to=[customer_email]  # Allow direct reply to customer
     )

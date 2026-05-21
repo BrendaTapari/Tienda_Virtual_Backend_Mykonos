@@ -261,7 +261,9 @@ async def confirm_order_payment(order_id: int, payment_reference: str, payment_p
                     COALESCE(wu.username, 'Invitado') as username,
                     wu.email,
                     wu.fullname,
-                    wu.phone
+                    wu.phone,
+                    s.shipping_cost,
+                    s.coupon_discount_amount
                 FROM sales s
                 LEFT JOIN web_users wu ON s.web_user_id = wu.id
                 WHERE s.id = $1
@@ -272,7 +274,27 @@ async def confirm_order_payment(order_id: int, payment_reference: str, payment_p
             FRONTEND_URL = "https://mykonosboutique.com.ar" # Or get from env
             tracking_link = f"{FRONTEND_URL}/order-tracking/{order_id}"
             
+            
             if full_order_info:
+                # Fetch items to show in the email
+                items_records = await conn.fetch(
+                    """
+                    SELECT 
+                        sd.product_name,
+                        sd.size_name,
+                        sd.color_name,
+                        sd.quantity,
+                        sd.sale_price,
+                        p.precio_web as original_price,
+                        CASE WHEN p.has_discount = 1 THEN p.discount_percentage ELSE 0 END as current_discount_percentage
+                    FROM sales_detail sd
+                    LEFT JOIN products p ON sd.product_id = p.id
+                    WHERE sd.sale_id = $1
+                    """,
+                    order_id
+                )
+                items_list = [dict(i) for i in items_records]
+
                 # Send email to business
                 try:
                     await send_new_order_notification_to_business(
@@ -284,7 +306,10 @@ async def confirm_order_payment(order_id: int, payment_reference: str, payment_p
                         items_count=items_count,
                         shipping_address=full_order_info['shipping_address'],
                         delivery_type=full_order_info['delivery_type'],
-                        order_link=tracking_link
+                        order_link=tracking_link,
+                        items=items_list,
+                        shipping_cost=float(full_order_info.get('shipping_cost') or 0.0),
+                        coupon_discount=float(full_order_info.get('coupon_discount_amount') or 0.0)
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send business notification email: {e}")

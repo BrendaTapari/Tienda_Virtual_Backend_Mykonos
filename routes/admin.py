@@ -441,7 +441,9 @@ async def get_order_details(order_id: int):
                 sd.sale_price as unit_price,
                 sd.subtotal,
                 wsv.variant_barcode as barcode,
-                e.entity_name as provider
+                e.entity_name as provider,
+                p.precio_web as original_price,
+                CASE WHEN p.has_discount = 1 THEN p.discount_percentage ELSE 0 END as current_discount_percentage
             FROM sales_detail sd
             LEFT JOIN warehouse_stock_variants wsv ON sd.variant_id = wsv.id
             LEFT JOIN products p ON sd.product_id = p.id

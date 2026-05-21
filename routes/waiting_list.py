@@ -101,7 +101,17 @@ async def get_waiting_list(
             SELECT 
                 le.id, 
                 le.product_id, 
-                le.codigo_barra_variante,
+                COALESCE(
+                    le.codigo_barra_variante,
+                    (
+                        SELECT wsv.variant_barcode 
+                        FROM warehouse_stock_variants wsv 
+                        JOIN lista_espera_talles let ON let.size_id = wsv.size_id AND let.waiting_list_id = le.id
+                        JOIN lista_espera_colores lec ON lec.color_id = wsv.color_id AND lec.waiting_list_id = le.id
+                        WHERE wsv.product_id = le.product_id
+                        LIMIT 1
+                    )
+                ) as codigo_barra_variante,
                 le.celular_cliente, 
                 le.nombre_cliente, 
                 le.producto_buscado, 

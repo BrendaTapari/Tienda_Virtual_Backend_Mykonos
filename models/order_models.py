@@ -63,6 +63,8 @@ class OrderItem(BaseModel):
     subtotal: float
     barcode: Optional[str] = None
     provider: Optional[str] = None
+    original_price: Optional[float] = None
+    current_discount_percentage: Optional[float] = None
     
     class Config:
         from_attributes = True

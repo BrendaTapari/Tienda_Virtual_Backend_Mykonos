@@ -422,6 +422,8 @@ async def _create_order_impl(
                              CAST(p.precio_web * (1 - p.discount_percentage / 100.0) AS NUMERIC)
                         ELSE p.precio_web 
                     END as unit_price,
+                    p.precio_web as original_price,
+                    CASE WHEN p.has_discount = 1 THEN p.discount_percentage ELSE 0 END as discount_percentage,
                     p.provider_code as product_code,
                     COALESCE(s_web.size_name, s_warehouse.size_name) as size_name,
                     COALESCE(c_web.color_name, c_warehouse.color_name) as color_name,
@@ -687,7 +689,7 @@ async def _create_order_impl(
                         total,
                         created_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, 0, 0, 0, 0, $10, $10, CURRENT_TIMESTAMP)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, 0, 0, $12, $12, CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
                     sale_id,
@@ -699,6 +701,8 @@ async def _create_order_impl(
                     item['color_name'],
                     item['unit_price'],
                     item['quantity'],
+                    item['discount_percentage'],
+                    float(item.get('original_price', item['unit_price'])) - float(item['unit_price']),
                     float(item['unit_price']) * item['quantity']
                 )
                 
@@ -872,7 +876,9 @@ async def confirm_payment(
                     wu.username,
                     wu.email,
                     wu.fullname,
-                    wu.phone
+                    wu.phone,
+                    s.shipping_cost,
+                    s.coupon_discount_amount
                 FROM sales s
                 LEFT JOIN web_users wu ON s.web_user_id = wu.id
                 WHERE s.id = $1
@@ -1061,6 +1067,25 @@ async def confirm_payment(
                 order_id
             )
             
+            # Fetch items to show in the email
+            items_records = await conn.fetch(
+                """
+                SELECT 
+                    sd.product_name,
+                    sd.size_name,
+                    sd.color_name,
+                    sd.quantity,
+                    sd.sale_price,
+                    p.precio_web as original_price,
+                    CASE WHEN p.has_discount = 1 THEN p.discount_percentage ELSE 0 END as current_discount_percentage
+                FROM sales_detail sd
+                LEFT JOIN products p ON sd.product_id = p.id
+                WHERE sd.sale_id = $1
+                """,
+                order_id
+            )
+            items_list = [dict(i) for i in items_records]
+
             # Prepare tracking link
             tracking_link = f"{FRONTEND_URL}/order-tracking/{order_id}"
             
@@ -1076,7 +1101,10 @@ async def confirm_payment(
                     shipping_address=order['shipping_address'],
                     delivery_type=order['delivery_type'],
                     order_link=tracking_link,
-                    customer_notes=order['notes']
+                    customer_notes=order['notes'],
+                    items=items_list,
+                    shipping_cost=float(order.get('shipping_cost') or 0.0),
+                    coupon_discount=float(order.get('coupon_discount_amount') or 0.0)
                 )
             except Exception as e:
                 print(f"Warning: Failed to send business notification email: {e}")
